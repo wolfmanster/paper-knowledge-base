@@ -18,6 +18,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import build_index
 import generate_collection_info
+import index_generation
 import query as query_module
 import sync_zotero
 import watch_zotero
@@ -47,6 +48,62 @@ def test_query_module_defers_sentence_transformers_import(monkeypatch):
         sys.modules.pop(module_name, None)
         if existing_transformers is not None:
             sys.modules["sentence_transformers"] = existing_transformers
+
+
+def test_query_prefers_cuda_when_available(monkeypatch):
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: True),
+        backends=types.SimpleNamespace(
+            mps=types.SimpleNamespace(is_available=lambda: False)
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert query_module._preferred_model_device() == "cuda"
+
+
+def test_query_falls_back_to_cpu_without_gpu(monkeypatch):
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+        backends=types.SimpleNamespace(
+            mps=types.SimpleNamespace(is_available=lambda: False)
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert query_module._preferred_model_device() == "cpu"
+
+
+def test_query_model_loaders_receive_preferred_device(monkeypatch):
+    calls: list[tuple[str, str, str]] = []
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name, *, device):
+            calls.append(("bi", str(model_name), device))
+
+    class FakeCrossEncoder:
+        def __init__(self, model_name, *, device):
+            calls.append(("cross", str(model_name), device))
+
+    monkeypatch.setattr(query_module, "_preferred_model_device", lambda: "cuda")
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(
+            SentenceTransformer=FakeSentenceTransformer,
+            CrossEncoder=FakeCrossEncoder,
+        ),
+    )
+
+    query_module._load_bi_encoder()
+    query_module._load_cross_encoder()
+
+    assert calls[0][0::2] == ("bi", "cuda")
+    assert calls[1] == (
+        "cross",
+        "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "cuda",
+    )
 
 
 class MetadataCollection:
@@ -378,6 +435,29 @@ def test_replace_paper_chunks_restores_old_data_on_failure():
 
     assert list(collection.records) == ["paper#0"]
     assert collection.records["paper#0"]["document"] == "old document"
+
+
+def test_successful_chunk_replacement_marks_index_changed(monkeypatch):
+    collection = RollbackCollection()
+    collection.failed = True
+    marks: list[bool] = []
+    monkeypatch.setattr(
+        index_generation,
+        "mark_index_changed",
+        lambda: marks.append(True),
+    )
+
+    sync_zotero.replace_paper_chunks(
+        collection,
+        paper_id="paper",
+        ids=["paper#0"],
+        embeddings=[[1.0, 0.0]],
+        documents=["new document"],
+        metadatas=[{"paper_id": "paper"}],
+    )
+
+    assert marks == [True]
+    assert collection.records["paper#0"]["document"] == "new document"
 
 
 def test_delete_only_sync_still_runs_cleanup(tmp_path, monkeypatch):

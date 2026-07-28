@@ -9,6 +9,8 @@ paper knowledge base/
 ├── .claude/skills/paper-search/    # paper-search skill（自动触发搜索）
 ├── scripts/                        # 所有可执行脚本
 │   ├── query.py                    # 查询入口（语义 + 文本，JSON 输出）
+│   ├── semantic_service.py         # 常驻语义检索服务（模型只加载一次）
+│   ├── index_generation.py         # Chroma 跨进程更新代际标记
 │   ├── quick_search.py             # 文本搜索引擎（SQLite FTS5）
 │   ├── build_index.py              # 构建文本索引
 │   ├── search.py                   # 交互式搜索 CLI（Rich）
@@ -27,6 +29,7 @@ paper knowledge base/
 │   ├── zotero_checkpoint.json      # Zotero 增量同步检查点
 │   └── mineru_cache/               # MinerU 临时输出缓存
 ├── requirements.txt
+├── requirements-gpu.txt            # NVIDIA CUDA 12.8 可选依赖
 └── .gitignore
 ```
 
@@ -36,11 +39,22 @@ paper knowledge base/
 # 安装依赖
 pip install -r requirements.txt
 
+# NVIDIA GPU（CUDA 12.8）
+pip install -r requirements-gpu.txt
+
 # 交互式搜索
 python scripts/search.py
 
-# 单次语义查询（JSON 输出，含 Cross-Encoder 重排）
+# 语义查询（JSON 输出；首次自动启动服务并预热，后续复用模型）
 python scripts/query.py "your search query" 5
+
+# 可提前预热、查看或停止常驻服务
+python scripts/semantic_service.py start
+python scripts/semantic_service.py status
+python scripts/semantic_service.py stop
+
+# 调试时跳过服务，在当前进程加载模型
+python scripts/query.py --local "your search query" 5
 
 # 单次关键词查询（~10ms 响应）
 python scripts/query.py --mode text "topology optimization" 10
@@ -53,13 +67,13 @@ python scripts/generate_collection_info.py
 
 ```
 用户查询
-  ├── 语义搜索（默认）  → query.py → ChromaDB 向量检索 → Cross-Encoder 重排 → JSON
+  ├── 语义搜索（默认）  → query.py → 常驻服务 → ChromaDB 初检 → Cross-Encoder 重排 → JSON
   └── 文本搜索（--mode text） → query.py → quick_search.py → kb/index.db (SQLite FTS5) → JSON
 ```
 
 | 特性 | 语义搜索 | 文本搜索 |
 |------|---------|---------|
-| 速度 | ~5s | ~10ms |
+| 速度 | 首次约 31s 预热，后续复用模型 | ~10ms |
 | 适用 | 概念/研究问题 | 关键词/标题/特定术语 |
 | 引擎 | ChromaDB HNSW 余弦距离 | SQLite LIKE + FTS5 trigram |
 | 重排 | Cross-Encoder（ms-marco-MiniLM） | 无（FTS5 rank 内置） |
@@ -68,6 +82,9 @@ python scripts/generate_collection_info.py
 ## 功能
 
 - **语义搜索**：Bi-Encoder 初检 → Cross-Encoder 二次重排 + sigmoid 归一化
+- **常驻模型**：`query.py` 自动连接本机 `127.0.0.1:8765`，服务缺失时后台拉起；日志写入 `kb/semantic_service.log`
+- **索引自动刷新**：`ingest.py` / `sync_zotero.py` 写入后推进索引代际；下一次查询自动重启服务并加载最新 HNSW
+- **GPU 优先**：检测到 CUDA（或 Apple MPS）时两个语义模型自动使用 GPU，否则回退 CPU；NVIDIA 环境使用 `requirements-gpu.txt`，`semantic_service.py status` 的 `device` 字段显示实际设备
 - **文本快速搜索**：标题/摘要/AI 摘要关键词检索，~10ms 响应
 - **Zotero 自动同步**：直读 `zotero.sqlite`，保留 DOI、作者、期刊、年份、集合分类
 - **MinerU 高精度提取**：`pipeline + auto + CPU` 模式，多栏/公式/表格支持好

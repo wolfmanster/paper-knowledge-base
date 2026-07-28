@@ -5,6 +5,7 @@
   python query.py "你的问题" [top_k]                   语义搜索（默认）
   python query.py --mode text "关键字" [top_k]         文本搜索（快速）
   python query.py --mode semantic "你的问题" [top_k]   显式语义搜索
+  python query.py --local "你的问题" [top_k]           跳过常驻服务，本进程加载模型
 
 输出：JSON 格式搜索结果
 """
@@ -35,6 +36,21 @@ if str(SCRIPTS_DIR) not in sys.path:
 CHROMA_DIR = BASE_DIR / "kb" / "chroma"
 COLLECTION_NAME = "papers"
 
+
+def _preferred_model_device() -> str:
+    """优先使用可用的 GPU，未检测到 GPU 时回退到 CPU。"""
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+
+    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+
+    return "cpu"
+
+
 def _load_bi_encoder() -> "SentenceTransformer":
     """加载 Bi-Encoder，失败时打印错误并退出。"""
     model_path = (
@@ -49,10 +65,12 @@ def _load_bi_encoder() -> "SentenceTransformer":
     try:
         from sentence_transformers import SentenceTransformer
 
+        device = _preferred_model_device()
         if model_path.exists():
-            return SentenceTransformer(str(model_path))
+            return SentenceTransformer(str(model_path), device=device)
         return SentenceTransformer(
-            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            device=device,
         )
     except Exception as e:
         _fail(f"Bi-Encoder 加载失败: {e}")
@@ -63,7 +81,10 @@ def _load_cross_encoder():
     try:
         from sentence_transformers import CrossEncoder
 
-        return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        return CrossEncoder(
+            "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            device=_preferred_model_device(),
+        )
     except Exception as e:
         sys.stderr.write(f"[WARN] Cross-Encoder 加载失败（仅使用 Bi-Encoder）: {e}\n")
         return None
@@ -153,12 +174,14 @@ def get_paper_chunks(
     return truncated
 
 
-def search(query: str, top_k: int = 5) -> list:
-    """两阶段搜索：Bi-Encoder 初检 → Cross-Encoder 重排。"""
-    bi_encoder = _load_bi_encoder()
-    cross_encoder = _load_cross_encoder()
-    collection = _get_collection()
-
+def search_with_components(
+    query: str,
+    top_k: int,
+    bi_encoder,
+    cross_encoder,
+    collection,
+) -> list:
+    """使用已加载的模型和集合执行两阶段搜索。"""
     # Bi-Encoder 初检
     query_emb = bi_encoder.encode([query], normalize_embeddings=True).tolist()
     initial_k = max(top_k * 2, 20)
@@ -206,6 +229,24 @@ def search(query: str, top_k: int = 5) -> list:
     return output
 
 
+def search(query: str, top_k: int = 5) -> list:
+    """在当前进程加载模型并执行两阶段搜索。"""
+    return search_with_components(
+        query=query,
+        top_k=top_k,
+        bi_encoder=_load_bi_encoder(),
+        cross_encoder=_load_cross_encoder(),
+        collection=_get_collection(),
+    )
+
+
+def search_via_service(query: str, top_k: int = 5) -> list:
+    """通过常驻语义检索服务搜索，服务未运行时自动拉起。"""
+    from semantic_service import remote_search
+
+    return remote_search(query, top_k)
+
+
 if __name__ == "__main__":
     # ── 参数解析 ──────────────────────────────────────────
     # 用法:
@@ -213,6 +254,7 @@ if __name__ == "__main__":
     #   python query.py --mode text <查询语句> [top_k]           文本搜索
     #   python query.py -m text <查询语句> [top_k]
     #   python query.py --mode semantic <查询语句> [top_k]      显式语义搜索
+    #   python query.py --local <查询语句> [top_k]             本进程加载模型
     #   python query.py --get-paper-chunks "filename.pdf"       获取论文全文块
     #   python query.py -g "filename.pdf"                       同上（简写）
     #   python query.py --version                               显示版本号
@@ -229,8 +271,13 @@ if __name__ == "__main__":
         sys.exit(0)
 
     search_mode = "semantic"
+    local_semantic = False
     get_chunks_filename = None
     args: list[str] = sys.argv[1:]
+
+    if "--local" in args:
+        local_semantic = True
+        args.remove("--local")
 
     # 解析 --get-paper-chunks / -g
     i = 0
@@ -281,6 +328,8 @@ if __name__ == "__main__":
         top_k = int(args[1]) if len(args) > 1 else 5
     except ValueError:
         _fail("top_k 必须为整数")
+    if not 1 <= top_k <= 100:
+        _fail("top_k 必须在 1 到 100 之间")
 
     if search_mode == "text":
         # 文本/关键词搜索
@@ -292,6 +341,15 @@ if __name__ == "__main__":
         results = text_search(query, top_k)
     else:
         # 语义搜索
-        results = search(query, top_k)
+        if local_semantic:
+            results = search(query, top_k)
+        else:
+            try:
+                results = search_via_service(query, top_k)
+            except Exception as e:
+                _fail(
+                    f"常驻语义检索服务不可用: {e}；"
+                    "如需本进程搜索，请显式使用 --local"
+                )
 
     print(json.dumps(results, ensure_ascii=False, indent=2))

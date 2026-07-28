@@ -14,6 +14,7 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+from index_generation import mark_index_changed
 from utils import (
     CHUNK_MAX_WORDS,
     chunk_text,
@@ -233,6 +234,7 @@ def main():
         existing_ids.add(paper_id)
         new_count += 1
         total_chunks += len(ids)
+        mark_index_changed()
 
         if new_count % 10 == 0:
             elapsed = time.time() - start_time

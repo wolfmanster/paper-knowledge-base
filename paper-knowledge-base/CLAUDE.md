@@ -12,6 +12,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 安装依赖
 pip install -r requirements.txt
 
+# NVIDIA GPU（CUDA 12.8）
+pip install -r requirements-gpu.txt
+
 # 首次使用：先将 MinerU GUI 注册到其 venv 中
 cd ../MinerU-GUI
 python -m pip install -e .
@@ -19,8 +22,16 @@ python -m pip install -e .
 # 交互式语义搜索
 python scripts/search.py
 
-# 语义搜索（JSON 输出，供 Skill 调用）
+# 语义搜索（JSON 输出，供 Skill 调用；首次自动启动常驻服务）
 python scripts/query.py "your search query" 5
+
+# 提前预热 / 查看 / 停止常驻语义检索服务
+python scripts/semantic_service.py start
+python scripts/semantic_service.py status
+python scripts/semantic_service.py stop
+
+# 绕过服务，在当前进程加载模型
+python scripts/query.py --local "your search query" 5
 
 # 获取某篇论文的全文（从 ChromaDB，不需要 PDF 文件）
 python scripts/query.py --get-paper-chunks "filename.pdf"
@@ -56,13 +67,13 @@ python -m pytest tests/test_utils.py::test_something -v -s  # 单测试
 
 ```
 用户查询
-  ├── 语义搜索（默认）  → query.py → ChromaDB 向量检索 → Cross-Encoder 重排 → JSON
+  ├── 语义搜索（默认）  → query.py → 常驻服务 → ChromaDB 初检 → Cross-Encoder 重排 → JSON
   └── 文本搜索（--mode text） → query.py → quick_search.py → kb/index.db (SQLite FTS5) → JSON
 ```
 
 | 特性 | 语义搜索 | 文本搜索 |
 |------|---------|---------|
-| 速度 | ~5s | ~10ms |
+| 速度 | 首次约 31s 预热，后续复用模型 | ~10ms |
 | 适用 | 概念/研究问题 | 关键词/标题/特定术语 |
 | 引擎 | ChromaDB HNSW 余弦距离 | SQLite LIKE + FTS5 trigram |
 | 重排 | Cross-Encoder (ms-marco-MiniLM) | 无（FTS5 rank 内置） |
@@ -111,6 +122,8 @@ paper knowledge base/
 ├── .claude/skills/paper-search/SKILL.md   # Skill 定义（自动触发搜索）
 ├── scripts/                               # 所有可执行代码
 │   ├── query.py                           # 查询入口（语义 + 文本，JSON 输出）
+│   ├── semantic_service.py                # 常驻语义检索服务（模型只加载一次）
+│   ├── index_generation.py                # Chroma 跨进程更新代际标记
 │   ├── quick_search.py                    # 文本搜索引擎（LIKE + FTS5）
 │   ├── build_index.py                     # 构建文本索引（摘要提取 + SQLite）
 │   ├── search.py                          # 交互式 Rich CLI

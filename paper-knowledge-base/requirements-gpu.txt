@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# CUDA 12.8 构建；精确版本避免 pip 从 PyPI 选择 CPU wheel。
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.0+cu128

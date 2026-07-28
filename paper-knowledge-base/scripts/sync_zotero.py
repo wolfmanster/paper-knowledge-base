@@ -878,6 +878,10 @@ def replace_paper_chunks(
             except Exception as restore_error:
                 logger.critical("  旧 chunks 恢复失败，需要人工修复: %s", restore_error)
         raise
+    else:
+        from index_generation import mark_index_changed
+
+        mark_index_changed()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -924,6 +928,10 @@ def cleanup_deleted_items(cursor, collection, since_version: int = 0) -> int:
             except Exception as e:
                 logger.warning("  删除失败 (itemID=%d): %s", item_id, e)
 
+    if removed:
+        from index_generation import mark_index_changed
+
+        mark_index_changed()
     return removed
 
 
