@@ -1,6 +1,0 @@
-__pycache__/
-*.pyc
-output/
-.window_geometry.json
-.venv/
-.claude
