@@ -209,6 +209,18 @@ if __name__ == "__main__":
     #   python query.py --mode semantic <查询语句> [top_k]      显式语义搜索
     #   python query.py --get-paper-chunks "filename.pdf"       获取论文全文块
     #   python query.py -g "filename.pdf"                       同上（简写）
+    #   python query.py --version                               显示版本号
+
+    # --version 快速退出（不延迟导入）
+    if "--version" in sys.argv[1:]:
+        _version_file = BASE_DIR.parent / "_version.py"
+        if _version_file.exists():
+            _ver: dict[str, str] = {}
+            exec(_version_file.read_text(encoding="utf-8"), _ver)
+            print(f"paper-knowledge-base {_ver.get('__version__', 'unknown')}")
+        else:
+            print("paper-knowledge-base unknown (no _version.py)")
+        sys.exit(0)
 
     search_mode = "semantic"
     get_chunks_filename = None

@@ -36,6 +36,23 @@ from pathlib import Path
 
 from gui._core import run_core
 
+# ── Version ─────────────────────────────────────────────
+
+def _get_version() -> str:
+    """Return the package version — from importlib.metadata (installed) or fallback."""
+    try:
+        import importlib.metadata
+        return importlib.metadata.version("mineru-gui")
+    except Exception:  # noqa: BLE001 — broad catch for PackageNotFoundError
+        try:
+            from _version import __version__  # type: ignore[import-untyped]
+            return __version__
+        except ImportError:
+            return "0.0.0"
+
+__version__ = _get_version()
+"""Package version (str) — readable after ``from mineru_api import __version__``."""
+
 
 @dataclass
 class ConversionResult:
