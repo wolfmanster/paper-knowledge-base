@@ -13,15 +13,18 @@ Zotero → 论文知识库 同步脚本
 from __future__ import annotations
 
 import atexit
+import errno
 import hashlib
 import json
 import logging
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 # ── 路径 ─────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +33,9 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 CHROMA_DIR = REPO_ROOT / "kb" / "chroma"
 CHECKPOINT_FILE = REPO_ROOT / "kb" / "zotero_checkpoint.json"
 LOG_FILE = REPO_ROOT / "kb" / "sync_zotero.log"
+SYNC_LOCK_FILE = REPO_ROOT / "kb" / "sync_zotero.lock"
 COLLECTION_NAME = "papers"
+DEFAULT_MINERU_TIMEOUT_SECONDS = 24 * 60 * 60
 
 # Zotero 默认路径
 DEFAULT_ZOTERO_DIR = Path.home() / "Zotero"
@@ -44,6 +49,82 @@ _DEFAULT_MINERU_DIR = (SCRIPTS_DIR.parent.parent / "MinerU-GUI").resolve()
 
 # 在模块层级维护 Zotero 连接引用，供 atexit 清理
 _ZOTERO_CONN: sqlite3.Connection | None = None
+
+
+class SyncProcessLock:
+    """Cross-platform advisory lock that serializes all sync processes."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._handle: BinaryIO | None = None
+
+    @staticmethod
+    def _try_lock(handle: BinaryIO) -> None:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    @staticmethod
+    def _unlock(handle: BinaryIO) -> None:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def acquire(self, *, blocking: bool = True, poll_seconds: float = 1.0) -> bool:
+        if self._handle is not None:
+            return True
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open("a+b", buffering=0)
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b"\0")
+
+        waiting_logged = False
+        while True:
+            try:
+                self._try_lock(handle)
+                self._handle = handle
+                return True
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    handle.close()
+                    raise
+                if not blocking:
+                    handle.close()
+                    return False
+                if not waiting_logged:
+                    logger.info("另一个 Zotero 同步正在运行，等待其完成...")
+                    waiting_logged = True
+                time.sleep(poll_seconds)
+
+    def release(self) -> None:
+        if self._handle is None:
+            return
+        handle = self._handle
+        self._handle = None
+        try:
+            self._unlock(handle)
+        finally:
+            handle.close()
+
+    def __enter__(self) -> SyncProcessLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.release()
 
 # ── 日志 ─────────────────────────────────────────────────────
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
@@ -366,6 +447,27 @@ def save_checkpoint(state: dict):
     tmp.replace(CHECKPOINT_FILE)
 
 
+def compute_next_last_item_id(previous_item_id: int, items: list[dict]) -> int:
+    """Advance the item checkpoint without ever moving it backwards."""
+    return max(
+        previous_item_id,
+        max((int(item["item_id"]) for item in items), default=previous_item_id),
+    )
+
+
+def resolve_mineru_python(mineru_dir: Path) -> Path:
+    """Locate the MinerU virtualenv interpreter on Windows or POSIX systems."""
+    candidates = (
+        mineru_dir / ".venv" / "Scripts" / "python.exe",
+        mineru_dir / ".venv" / "bin" / "python",
+        mineru_dir / ".venv" / "bin" / "python3",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0] if os.name == "nt" else candidates[1]
+
+
 # ═══════════════════════════════════════════════════════════════
 #  文档提取（MinerU subprocess，支持 PDF/Word/图片）
 # ═══════════════════════════════════════════════════════════════
@@ -374,7 +476,7 @@ def resolve_attachment_path(
     zotero_storage: Path,
     attachment_key: str,
     content_type: str,
-    max_size_mb: int = 25,
+    max_size_mb: int = 500,
 ) -> Path | None:
     """在 Zotero storage/ 目录中查找附件文件。
 
@@ -428,12 +530,72 @@ def resolve_attachment_path(
     return file_path
 
 
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    """Forcefully terminate a MinerU process and all descendants."""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.kill()
+
+
+def run_captured_process(
+    command: list[str],
+    *,
+    timeout_seconds: float,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a captured subprocess with a timeout that also kills descendants."""
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be greater than zero")
+
+    process_kwargs: dict = {}
+    if os.name == "nt":
+        process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        process_kwargs["start_new_session"] = True
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        **process_kwargs,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(
+        command,
+        process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def extract_with_mineru(
     file_path: Path,
     output_dir: Path,
     *,
     lang: str = "en",
-    max_pages: int = 20,
+    max_pages: int = 0,
+    timeout_seconds: float = DEFAULT_MINERU_TIMEOUT_SECONDS,
 ) -> dict | None:
     """通过 MinerU subprocess 提取文档文本。
 
@@ -444,7 +606,8 @@ def extract_with_mineru(
         file_path: 文件路径（.pdf 或 .docx）
         output_dir: MinerU 输出目录
         lang: OCR 语言（默认 en）
-        max_pages: 最多处理页数（Word 文件忽略此参数）
+        max_pages: 最多处理页数；0 表示全部页面（Word 文件忽略此参数）
+        timeout_seconds: 单篇 MinerU 最长运行秒数（默认 24 小时）
 
     Returns:
         {"text": "pure text", "markdown": "raw md"}，失败返回 None
@@ -470,7 +633,7 @@ def extract_with_mineru(
         env = os.environ.copy()
         env["MINERU_GUI_DIR"] = str(MINERU_DIR)
 
-        proc = subprocess.run(
+        proc = run_captured_process(
             [
                 str(MINERU_PYTHON),
                 str(MINERU_SCRIPT),
@@ -479,13 +642,8 @@ def extract_with_mineru(
                 "--lang", lang,
                 "--max_pages", str(max_pages),
             ],
-            capture_output=True,
-            text=True,
-            timeout=600,  # 10 分钟超时（pipeline CPU 模式较慢）
-            encoding="utf-8",
-            errors="replace",
+            timeout_seconds=timeout_seconds,
             env=env,
-            check=False,
         )
 
         # 解析输出 JSON
@@ -502,7 +660,11 @@ def extract_with_mineru(
             return None
 
     except subprocess.TimeoutExpired:
-        logger.warning("  MinerU 超时 (10min): %s", file_path.name)
+        logger.warning(
+            "  MinerU 超过 %.1f 小时，已终止进程树并保留到重试队列: %s",
+            timeout_seconds / 3600,
+            file_path.name,
+        )
         return None
     except json.JSONDecodeError as e:
         logger.warning("  MinerU 输出解析失败: %s", e)
@@ -756,11 +918,14 @@ def cleanup_deleted_items(cursor, collection, since_version: int = 0) -> int:
 #  主流程
 # ═══════════════════════════════════════════════════════════════
 
-def main():
+def _main_unlocked():
     import argparse
 
     # ── 参数解析 ──────────────────────────────────────────
-    parser = argparse.ArgumentParser(description="从 Zotero 同步论文到知识库")
+    parser = argparse.ArgumentParser(
+        description="从 Zotero 同步论文到知识库",
+        add_help=False,
+    )
     parser.add_argument("--version", action="store_true",
                         help="显示版本号并退出")
 
@@ -799,9 +964,14 @@ def main():
                         help="仅显示操作，不实际写入")
     parser.add_argument("--skip-build-index", action="store_true",
                         help="同步后不重建 FTS 文本索引")
+    parser.add_argument("--mineru-timeout-hours", type=float, default=24.0,
+                        help="单篇 MinerU 最长运行小时数（默认: 24）")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="详细日志输出")
     args = parser.parse_args()
+
+    if args.mineru_timeout_hours <= 0:
+        parser.error("--mineru-timeout-hours 必须大于 0")
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -817,7 +987,7 @@ def main():
 
     global MINERU_DIR, MINERU_PYTHON
     MINERU_DIR = _md
-    MINERU_PYTHON = (_md / ".venv" / "Scripts" / "python.exe") if _md else None
+    MINERU_PYTHON = resolve_mineru_python(_md) if _md else None
     # MINERU_SCRIPT 不受此影响，始终在项目 scripts/ 下
 
     zotero_dir: Path = args.zotero_dir
@@ -959,7 +1129,11 @@ def main():
             continue
 
         # 4. MinerU 提取文本
-        mineru_result = extract_with_mineru(att_path, mineru_output_dir)
+        mineru_result = extract_with_mineru(
+            att_path,
+            mineru_output_dir,
+            timeout_seconds=args.mineru_timeout_hours * 3600,
+        )
         if not mineru_result:
             logger.info("  -> 跳过: MinerU 提取失败")
             stats["skipped_extract_fail"] += 1
@@ -1076,7 +1250,7 @@ def main():
 
     # ── 保存检查点 ─────────────────────────────────────────
     if not dry_run:
-        max_item_id = max((it["item_id"] for it in items), default=checkpoint["last_item_id"])
+        max_item_id = compute_next_last_item_id(checkpoint["last_item_id"], items)
         save_checkpoint({
             "last_item_id": max_item_id,
             "last_version": current_version,
@@ -1129,6 +1303,13 @@ def main():
 
     # 关闭 Zotero 连接
     zotero_conn.close()
+
+
+def main():
+    if "--version" in sys.argv[1:]:
+        return _main_unlocked()
+    with SyncProcessLock(SYNC_LOCK_FILE):
+        return _main_unlocked()
 
 
 if __name__ == "__main__":

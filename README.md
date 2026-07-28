@@ -129,7 +129,10 @@ cd ../paper-knowledge-base
 python scripts/sync_zotero.py --dry-run        # 试运行
 python scripts/sync_zotero.py --full-rescan    # 全量重建
 python scripts/sync_zotero.py                  # 日常增量
+python scripts/watch_zotero.py                 # 每天检查 Zotero 并自动增量同步
 ```
+
+Windows 可在 `paper-knowledge-base/` 下运行 `powershell -ExecutionPolicy Bypass -File scripts/install_zotero_auto_sync.ps1`，将监听器安装为当前用户登录后自动启动的后台任务。监听器本身只依赖标准库，可在 Windows、macOS 和 Linux 使用。
 
 ### MinerU GUI 独立使用
 

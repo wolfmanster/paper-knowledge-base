@@ -93,7 +93,7 @@ Zotero PDF → MinerU pipeline + CPU → clean_text → 段落分割 → 100词�
 
 **回滚机制**：ChromaDB upsert 之前先查询已有 chunks，失败时清理本次写入的 chunks，不影响已有数据。
 
-**MinerU 提取约束**：>25MB 跳过，上限 20 页，单篇 100K 字符。
+**MinerU 提取约束**：>500MB 跳过；500MB 以内默认提取全部页面；单篇默认最长运行 24 小时，失败进入重试队列。
 
 **摘要提取**（`utils.py`）对三种期刊格式做多模式匹配：
 1. 空格字母格式（Elsevier: `A B S T R A C T`）→ `_normalize_spaced_letters` 对照学术词汇表拆分合并

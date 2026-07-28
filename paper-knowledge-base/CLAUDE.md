@@ -82,9 +82,9 @@ Zotero PDF → MinerU pipeline auto + CPU → clean_text → 段落分割 → 10
 
 **MinerU 集成要点**：
 - MinerU GUI 项目已通过 `pip install -e .` 注册到其 virtualenv（`.venv/Scripts/python.exe`），`mineru_extract.py` 直接 `from mineru_api import convert_document`
-- 参数：`backend="pipeline"` + `method="auto"` + `device="cpu"`，前 20 页上限
+- 参数：`backend="pipeline"` + `method="auto"` + `device="cpu"`，默认提取全部页面
 - 约 2-3 min/篇（CPU），写入 `kb/mineru_cache/` 作为缓存
-- 关键约束：文件 >25MB 跳过（手册/书籍），每篇 100K 字符上限
+- 关键约束：文件 >500MB 跳过；500MB 以内不因大小跳过；单篇默认最长运行 24 小时，失败进入重试队列
 
 ### 摘要提取策略（utils.py）
 

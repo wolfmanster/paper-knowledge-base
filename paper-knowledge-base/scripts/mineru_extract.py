@@ -7,7 +7,9 @@ MinerU 文档文本提取 — 基于 mineru_api.convert_document()
 完成 PDF / Word / 图片 解析，输出 JSON 到 stdout。
 
 用法:
-  python mineru_extract.py <file_path> <output_dir> [--lang en] [--max_pages 20]
+  python mineru_extract.py <file_path> <output_dir> [--lang en] [--max_pages 0]
+
+  --max_pages 0 表示提取全部页面（默认）。
 
 支持的文件格式:
   .pdf  .png  .jpg  .jpeg  .jp2  .webp  .gif  .bmp  .tiff  .docx
@@ -123,14 +125,14 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
 
     if len(sys.argv) < 3:
-        _error("用法: mineru_extract.py <file_path> <output_dir> [--lang en] [--max_pages 20]")
+        _error("用法: mineru_extract.py <file_path> <output_dir> [--lang en] [--max_pages 0]")
 
     file_path = Path(sys.argv[1])
     output_dir = Path(sys.argv[2])
 
     # 解析可选参数
     lang = "en"
-    max_pages = 20
+    max_pages = 0
     i = 3
     while i < len(sys.argv):
         if sys.argv[i] == "--lang" and i + 1 < len(sys.argv):

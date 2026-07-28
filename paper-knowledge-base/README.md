@@ -93,9 +93,38 @@ python scripts/sync_zotero.py --mineru-dir /path/to/MinerU/GUI --full-rescan --s
 
 # 日常增量
 python scripts/sync_zotero.py --mineru-dir /path/to/MinerU/GUI
+
+# 单篇默认最多运行 24 小时；需要时可调整
+python scripts/sync_zotero.py --mineru-timeout-hours 48
 ```
 
-同步保留完整元数据：标题、摘要、DOI、作者、期刊、年份、所属集合（如 "LC/仿生"、"CTP"）。
+同步保留完整元数据：标题、摘要、DOI、作者、期刊、年份、所属集合（如 "LC/仿生"、"CTP"）。所有同步入口共享跨进程锁，计划任务与手动同步不会并发写入 ChromaDB；超时或提取失败的论文保留到下次同步重试。
+
+### Zotero 新论文自动同步
+
+`watch_zotero.py` 是跨平台监听入口。它监控 `zotero.sqlite` 及其 WAL，默认每天检查一次并自动执行上述增量同步。启动时也会先同步一次，避免关机期间新增的论文遗漏。Zotero 附件在 500 MB 以内时不会因大小被跳过，MinerU 默认提取全部页面。
+
+```bash
+# Windows / macOS / Linux 均可直接运行
+python scripts/watch_zotero.py
+
+# Zotero 或 MinerU 不在默认位置时
+python scripts/watch_zotero.py --zotero-dir /path/to/Zotero --mineru-dir /path/to/MinerU-GUI
+
+# 如需覆盖每天一次的默认频率，可传入秒数
+python scripts/watch_zotero.py --interval 3600
+```
+
+Windows 可一键安装为当前用户登录后自动运行的后台任务；脚本会从自身位置推导项目路径，因此仓库移动到其他电脑后仍可使用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_zotero_auto_sync.ps1
+
+# 卸载
+powershell -ExecutionPolicy Bypass -File scripts/install_zotero_auto_sync.ps1 -Uninstall
+```
+
+macOS/Linux 可将同一条 `python scripts/watch_zotero.py` 命令配置到 LaunchAgent、systemd user service 或其他登录启动器。监听日志写入 `kb/watch_zotero.log`，每次实际同步的详细日志写入 `kb/sync_zotero.log`。
 
 ### 方式二：手动放入 Papers/（旧方式）
 
