@@ -168,30 +168,43 @@ def get_paper_items(
     return items
 
 
-def get_attachment_info(cursor, parent_item_id: int) -> Optional[str]:
-    """获取论文的 PDF 附件信息。
+def get_attachment_info(cursor, parent_item_id: int) -> Optional[dict]:
+    """获取论文的附件信息。
+
+    优先返回 PDF 附件；如无 PDF，则查找 .docx 附件。
 
     Args:
         parent_item_id: 父论文项 ID
 
     Returns:
-        attachment_key (items.key 的值，即 storage/ 下的目录名)，
-        如果没有 PDF 附件则返回 None
+        {"key": items.key, "content_type": "application/pdf"|"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+        如果没有附件则返回 None
     """
+    content_types = [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]
+
     row = cursor.execute(
         """
-        SELECT i.key
+        SELECT i.key, ia.contentType
         FROM itemAttachments ia
         JOIN items i ON ia.itemID = i.itemID
         WHERE ia.parentItemID = ?
-          AND ia.contentType = 'application/pdf'
           AND ia.linkMode = 0
+          AND ia.contentType IN ('application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        ORDER BY CASE ia.contentType
+          WHEN 'application/pdf' THEN 1
+          ELSE 2
+        END
         LIMIT 1
         """,
         (parent_item_id,),
     ).fetchone()
 
-    return row["key"] if row else None
+    if row:
+        return {"key": row["key"], "content_type": row["contentType"]}
+    return None
 
 
 def lookup_collections(cursor, item_id: int,
@@ -342,65 +355,90 @@ def save_checkpoint(state: dict):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  PDF 提取（MinerU subprocess）
+#  文档提取（MinerU subprocess，支持 PDF/Word/图片）
 # ═══════════════════════════════════════════════════════════════
 
-def resolve_pdf_path(zotero_storage: Path, attachment_key: str, max_size_mb: int = 25) -> Optional[Path]:
-    """在 Zotero storage/ 目录中查找 PDF 文件。
+def resolve_attachment_path(
+    zotero_storage: Path,
+    attachment_key: str,
+    content_type: str,
+    max_size_mb: int = 25,
+) -> Optional[Path]:
+    """在 Zotero storage/ 目录中查找附件文件。
 
-    跳过超过 max_size_mb 的超大文件（通常是手册/书籍而非研究论文）。
+    根据 content_type 查找对应后缀的文件（.pdf 或 .docx）。
+    跳过超过 max_size_mb 的超大文件。
 
     Args:
         zotero_storage: 指向 Zotero 的 storage/ 目录
         attachment_key: 附件项的 items.key
+        content_type: MIME 类型（决定要查找的文件后缀）
         max_size_mb: 文件大小上限（MB），超过返回 None
 
     Returns:
-        第一个找到的 .pdf 文件路径，未找到返回 None
+        第一个找到的匹配文件路径，未找到返回 None
     """
     storage_dir = zotero_storage / attachment_key
     if not storage_dir.is_dir():
         logger.debug("  storage 目录不存在: %s", storage_dir)
         return None
 
-    pdfs = sorted(storage_dir.glob("*.pdf"))
-    if not pdfs:
-        logger.debug("  目录中无 PDF 文件: %s", storage_dir)
+    if content_type == "application/pdf":
+        ext_pattern = "*.pdf"
+        type_label = "PDF"
+    elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        ext_pattern = "*.docx"
+        type_label = "Word"
+    else:
+        logger.debug("  不支持的附件类型: %s", content_type)
         return None
 
-    pdf_path = pdfs[0]
-    if len(pdfs) > 1:
-        logger.debug("  storage 目录中有多个 PDF，取第一个: %s", pdf_path.name)
+    files = sorted(storage_dir.glob(ext_pattern))
+    if not files:
+        logger.debug("  目录中无 %s 文件: %s", type_label, storage_dir)
+        return None
+
+    file_path = files[0]
+    if len(files) > 1:
+        logger.debug("  storage 目录中有多个 %s，取第一个: %s", type_label, file_path.name)
 
     # 超大文件检查
     max_bytes = max_size_mb * 1024 * 1024
     try:
-        if pdf_path.stat().st_size > max_bytes:
-            logger.warning("  PDF 文件过大 (>%dMB)，跳过: %s (%.1fMB)",
-                           max_size_mb, pdf_path.name, pdf_path.stat().st_size / (1024*1024))
+        if file_path.stat().st_size > max_bytes:
+            logger.warning("  %s 文件过大 (>%dMB)，跳过: %s (%.1fMB)",
+                           type_label, max_size_mb, file_path.name, file_path.stat().st_size / (1024*1024))
             return None
     except OSError as e:
-        logger.warning("  无法读取 PDF 文件大小: %s — %s", pdf_path.name, e)
+        logger.warning("  无法读取文件大小: %s — %s", file_path.name, e)
         return None
 
-    return pdf_path
+    return file_path
 
 
-def extract_pdf_with_mineru(pdf_path: Path, output_dir: Path) -> Optional[dict]:
-    """通过 MinerU subprocess 提取 PDF 文本。
+def extract_with_mineru(
+    file_path: Path,
+    output_dir: Path,
+    *,
+    lang: str = "en",
+    max_pages: int = 20,
+) -> Optional[dict]:
+    """通过 MinerU subprocess 提取文档文本。
 
-    调用 mineru_extract.py（在 MinerU venv 中运行），
+    支持 PDF 和 Word (.docx) 文件，调用 mineru_extract.py（在 MinerU venv 中运行），
     读取 stdout 中的 JSON 结果。
 
     Args:
-        pdf_path: PDF 文件路径
+        file_path: 文件路径（.pdf 或 .docx）
         output_dir: MinerU 输出目录
+        lang: OCR 语言（默认 en）
+        max_pages: 最多处理页数（Word 文件忽略此参数）
 
     Returns:
         {"text": "pure text", "markdown": "raw md"}，失败返回 None
     """
     if MINERU_PYTHON is None:
-        logger.error("  MinerU 路径未配置，跳过 PDF 提取")
+        logger.error("  MinerU 路径未配置，跳过文档提取")
         logger.error("  请通过 --mineru-dir 参数或 MINERU_DIR 环境变量指定 MinerU GUI 目录")
         return None
 
@@ -424,10 +462,10 @@ def extract_pdf_with_mineru(pdf_path: Path, output_dir: Path) -> Optional[dict]:
             [
                 str(MINERU_PYTHON),
                 str(MINERU_SCRIPT),
-                str(pdf_path),
+                str(file_path),
                 str(output_dir),
-                "--lang", "en",
-                "--max_pages", "20",
+                "--lang", lang,
+                "--max_pages", str(max_pages),
             ],
             capture_output=True,
             text=True,
@@ -451,7 +489,7 @@ def extract_pdf_with_mineru(pdf_path: Path, output_dir: Path) -> Optional[dict]:
             return None
 
     except subprocess.TimeoutExpired:
-        logger.warning("  MinerU 超时 (5min): %s", pdf_path.name)
+        logger.warning("  MinerU 超时 (10min): %s", file_path.name)
         return None
     except json.JSONDecodeError as e:
         logger.warning("  MinerU 输出解析失败: %s", e)
@@ -750,7 +788,7 @@ def main():
     # ── 统计 ───────────────────────────────────────────────
     stats = {
         "total": len(items),
-        "skipped_no_pdf": 0,
+        "skipped_no_attachment": 0,
         "skipped_dup": 0,
         "skipped_extract_fail": 0,
         "imported": 0,
@@ -786,38 +824,41 @@ def main():
             continue
 
         # 3. 获取附件
-        attachment_key = get_attachment_info(cursor, item_id)
-        if not attachment_key:
-            logger.info("  -> 跳过: 无 PDF 附件")
-            stats["skipped_no_pdf"] += 1
+        attachment = get_attachment_info(cursor, item_id)
+        if not attachment:
+            logger.info("  -> 跳过: 无 PDF 或 Word 附件")
+            stats["skipped_no_attachment"] += 1
             continue
 
-        pdf_path = resolve_pdf_path(zotero_storage, attachment_key)
-        if not pdf_path:
-            logger.info("  -> 跳过: storage 中未找到 PDF (key=%s)", attachment_key)
-            stats["skipped_no_pdf"] += 1
+        att_key = attachment["key"]
+        content_type = attachment["content_type"]
+        att_path = resolve_attachment_path(zotero_storage, att_key, content_type)
+        if not att_path:
+            logger.info("  -> 跳过: storage 中未找到附件 (key=%s, type=%s)", att_key, content_type)
+            stats["skipped_no_attachment"] += 1
             continue
 
-        logger.info("  PDF: %s", pdf_path.name)
+        type_label = "Word" if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" else "PDF"
+        logger.info("  %s: %s", type_label, att_path.name)
 
         if dry_run:
             logger.info("  [dry-run] 将提取并导入此论文")
             continue
 
         # 4. MinerU 提取文本
-        mineru_result = extract_pdf_with_mineru(pdf_path, mineru_output_dir)
+        mineru_result = extract_with_mineru(att_path, mineru_output_dir)
         if not mineru_result:
             logger.info("  -> 跳过: MinerU 提取失败")
             stats["skipped_extract_fail"] += 1
             continue
 
-        pdf_text = mineru_result.get("text", "")
-        if not pdf_text or len(pdf_text.strip()) < 20:
+        doc_text = mineru_result.get("text", "")
+        if not doc_text or len(doc_text.strip()) < 20:
             logger.info("  -> 跳过: 提取文本过短")
             stats["skipped_extract_fail"] += 1
             continue
 
-        logger.debug("  提取文本长度: %d 字符", len(pdf_text))
+        logger.debug("  提取文本长度: %d 字符", len(doc_text))
 
         # 5. 处理元数据
         doi_norm = item["doi"].strip().lower().rstrip(".") if item["doi"] else ""
@@ -826,7 +867,7 @@ def main():
         year = extract_year_from_date(item["date"])
 
         # 6. 构建 enriched 全文（将 Zotero 的 abstractNote 前置）
-        full_text = pdf_text
+        full_text = doc_text
         if item["abstract_note"]:
             # 如果 MinerU 提取的文本中也包含摘要，不必再前置
             # 但仍确保 metadata 中有摘要
@@ -854,7 +895,7 @@ def main():
             {
                 "paper_id": paper_id,
                 "title": item["title"],
-                "filename": pdf_path.name,
+                "filename": att_path.name,
                 "section": c.get("section", ""),
                 "chunk_index": c["chunk_index"],
                 "total_chunks": len(chunks),
@@ -965,7 +1006,7 @@ def main():
     logger.info("同步完成!")
     logger.info("  总计:            %d 篇", stats["total"])
     logger.info("  已导入:           %d 篇", stats["imported"])
-    logger.info("  跳过（无 PDF）:   %d 篇", stats["skipped_no_pdf"])
+    logger.info("  跳过（无附件）:   %d 篇", stats["skipped_no_attachment"])
     logger.info("  跳过（已有）:     %d 篇", stats["skipped_dup"])
     logger.info("  跳过（提取失败）: %d 篇", stats["skipped_extract_fail"])
 

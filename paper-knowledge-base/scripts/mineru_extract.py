@@ -1,13 +1,16 @@
 """
-MinerU PDF 文本提取 — 基于 mineru_api.convert_document()
-=======================================================
+MinerU 文档文本提取 — 基于 mineru_api.convert_document()
+==========================================================
 通过 subprocess 被 sync_zotero.py 调用。
 
 在 MinerU venv 中运行，调用 MinerU GUI 项目的 mineru_api.convert_document()
-完成 PDF 解析，输出 JSON 到 stdout。
+完成 PDF / Word / 图片 解析，输出 JSON 到 stdout。
 
 用法:
-  python mineru_extract.py <pdf_path> <output_dir> [--lang en] [--max_pages 20]
+  python mineru_extract.py <file_path> <output_dir> [--lang en] [--max_pages 20]
+
+支持的文件格式:
+  .pdf  .png  .jpg  .jpeg  .jp2  .webp  .gif  .bmp  .tiff  .docx
 
 环境变量:
   MINERU_GUI_DIR  指向 MinerU GUI 项目目录（例如 /path/to/MinerU/GUI）
@@ -120,9 +123,9 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
 
     if len(sys.argv) < 3:
-        _error("用法: mineru_extract.py <pdf_path> <output_dir> [--lang en] [--max_pages 20]")
+        _error("用法: mineru_extract.py <file_path> <output_dir> [--lang en] [--max_pages 20]")
 
-    pdf_path = Path(sys.argv[1])
+    file_path = Path(sys.argv[1])
     output_dir = Path(sys.argv[2])
 
     # 解析可选参数
@@ -140,22 +143,22 @@ def main():
             i += 1
 
     # 校验输入
-    if not pdf_path.exists():
-        _error(f"PDF 文件不存在: {pdf_path}")
-    if pdf_path.stat().st_size == 0:
-        _error(f"PDF 文件为空: {pdf_path}")
+    if not file_path.exists():
+        _error(f"文件不存在: {file_path}")
+    if file_path.stat().st_size == 0:
+        _error(f"文件为空: {file_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         result = convert_document(
-            file_path=str(pdf_path),
+            file_path=str(file_path),
             backend="pipeline",
-            lang="en",
+            lang=lang,
             method="auto",
             max_pages=max_pages,
             device="cpu",
-            output_dir=str(output_dir / pdf_path.stem),
+            output_dir=str(output_dir / file_path.stem),
         )
 
         if not result.success:
@@ -166,12 +169,12 @@ def main():
         # convert_document 内部已执行 flatten: 嵌套 MD → out_dir/{file_stem}.md
         md_file = result.output_md
         if md_file is None or not md_file.exists():
-            _error(f"MinerU 输出 MD 文件不存在 (pdf={pdf_path.name})")
+            _error(f"MinerU 输出 MD 文件不存在 (file={file_path.name})")
 
         md_text = md_file.read_text(encoding="utf-8")
 
         if not md_text or len(md_text.strip()) < 20:
-            _error(f"MinerU 提取的文本过短 (pdf={pdf_path.name})")
+            _error(f"MinerU 提取的文本过短 (file={file_path.name})")
 
         # 成功输出
         result_json = {
@@ -179,7 +182,7 @@ def main():
             "markdown": md_text,
             "text": _md_to_plain_text(md_text),
             "pages": _estimate_page_count(md_text),
-            "filename": pdf_path.name,
+            "filename": file_path.name,
         }
         print(json.dumps(result_json, ensure_ascii=False))
         sys.exit(0)
