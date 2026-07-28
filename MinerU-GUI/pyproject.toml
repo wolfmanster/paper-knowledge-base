@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mineru-gui"
+version = "1.0.0"
+description = "MinerU document parsing tool — desktop GUI + Python API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["mineru", "pdf", "ocr", "document-parser"]
+
+authors = [
+    { name = "wolfmanster" },
+]
+
+dependencies = [
+    "customtkinter>=5.2.2",
+    "windnd>=1.0.7",
+    "loguru",
+    "Pillow",
+]
+
+[project.optional-dependencies]
+mineru = ["mineru[core]>=3.0.4"]
+dev = ["pytest", "black", "ruff"]
+
+# app.py / mineru_api.py 是顶层单文件模块；gui/ 是包
+[tool.setuptools]
+py-modules = ["app", "mineru_api"]
+
+[tool.setuptools.packages.find]
+include = ["gui*"]
