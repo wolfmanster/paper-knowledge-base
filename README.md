@@ -11,14 +11,6 @@
 ```
 ├── paper-knowledge-base/               ← 论文知识库
 │   ├── scripts/                        # 所有可执行脚本
-│   │   ├── query.py                    # 查询入口（语义 + 文本，JSON 输出）
-│   │   ├── search.py                   # 交互式搜索 CLI（Rich 界面）
-│   │   ├── quick_search.py             # 文本搜索引擎（SQLite FTS5 trigram）
-│   │   ├── build_index.py              # 构建文本搜索索引
-│   │   ├── sync_zotero.py              # Zotero 同步主流程（MinerU 提取 PDF）
-│   │   ├── mineru_extract.py           # MinerU PDF 提取包装器
-│   │   ├── ingest.py                   # Papers/ 目录批量导入（PyMuPDF）
-│   │   └── utils.py                    # PDF 提取、分块、摘要、文本清洗工具
 │   ├── tests/                          # 测试套件（83 个测试）
 │   ├── .claude/skills/paper-search/    # Claude Code 搜索 skill
 │   ├── requirements.txt
@@ -28,10 +20,6 @@
 │   ├── mineru_api.py                   # Python API（供外部项目调用）
 │   ├── gui.py                          # 桌面 GUI 入口
 │   ├── gui/                            # GUI 组件
-│   │   ├── _core.py                    # 核心转换逻辑（GUI + API 共用）
-│   │   ├── main_window.py              # 主窗口
-│   │   ├── worker.py                   # 后台转换线程
-│   │   └── theme.py                    # 主题与字体
 │   ├── pyproject.toml                  # 包配置
 │   ├── requirements.txt
 │   └── CLAUDE.md
