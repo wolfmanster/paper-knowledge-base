@@ -12,14 +12,15 @@ cd mineru-gui
 :: 2. 一键安装（虚拟环境 + GUI 依赖）
 setup.bat
 
-:: 3. 安装 MinerU 引擎（核心依赖）
-.venv\Scripts\pip install mineru[core]
+:: 3. 安装 MinerU 引擎（核心依赖，必须用 3.x）
+.venv\Scripts\pip install "mineru[core]>=3.0.0,<4.0.0"
 
 :: 4. 启动
 start.bat
 ```
 
 > **注意**: MinerU 是核心解析引擎，安装时需联网下载模型文件。
+> 必须使用 MinerU **3.x** 版本（`<4.0.0`），4.x 尚未发布。
 > 如果已有 MinerU 环境，可直接将本项目的 `gui.py` 放在你的环境中运行。
 
 ## 依赖
@@ -29,7 +30,7 @@ start.bat
 | `customtkinter` | GUI 框架 |
 | `windnd` | 文件拖拽支持 |
 | `loguru` | 日志输出 |
-| `mineru` | 文档解析引擎（需额外安装） |
+| `mineru` | 文档解析引擎（**必须用 3.x**，需额外安装） |
 
 ## 使用
 

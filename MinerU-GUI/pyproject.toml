@@ -23,7 +23,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mineru = ["mineru[core]>=3.0.4"]
+# ⚠️ MinerU PDF 提取引擎 — 必须使用 3.x 版本（4.x 尚未发布）
+# 安装：pip install "mineru-gui[mineru]"
+mineru = ["mineru[core]>=3.0.0,<4.0.0"]
 dev = ["pytest", "black", "ruff"]
 
 # app.py / mineru_api.py 是顶层单文件模块；gui/ 是包
