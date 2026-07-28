@@ -40,10 +40,11 @@ from gui._core import run_core
 
 def _get_version() -> str:
     """Return the package version — from importlib.metadata (installed) or fallback."""
+    import importlib.metadata
+
     try:
-        import importlib.metadata
         return importlib.metadata.version("mineru-gui")
-    except Exception:  # noqa: BLE001 — broad catch for PackageNotFoundError
+    except importlib.metadata.PackageNotFoundError:
         try:
             from _version import __version__  # type: ignore[import-untyped]
             return __version__
