@@ -30,7 +30,7 @@ dev = ["pytest", "black", "ruff"]
 
 # app.py / mineru_api.py 是顶层单文件模块；gui/ 是包
 [tool.setuptools]
-py-modules = ["app", "mineru_api"]
+py-modules = ["app", "mineru_api", "_version"]
 
 [tool.setuptools.packages.find]
 include = ["gui*"]

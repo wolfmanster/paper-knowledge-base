@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Version management across the monorepo: single `_version.py` source of truth,
+  `__version__` in `mineru_api.py` and `app.py`, `--version` CLI flags,
+  version shown in GUI window title, CHANGELOG.
+
 ## [1.0.0] — 2026-07-28
 
 ### Added

@@ -9,7 +9,10 @@ import re
 from pathlib import Path
 
 # ── Version ──────────────────────────────────────────────────
-from _version import __version__  # noqa: F401 — re-exported for use by other modules
+try:
+    from _version import __version__  # noqa: F401 — re-exported for use by other modules
+except ImportError:
+    __version__ = "0.0.0"  # fallback when _version.py not shipped (non-editable install)
 
 # ── 配置 ──────────────────────────────────────────────────
 PROJECT_DIR = Path(__file__).parent.resolve()
