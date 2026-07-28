@@ -10,7 +10,7 @@ from pathlib import Path
 import customtkinter as ctk
 import windnd  # type: ignore
 
-from app import OUTPUT_DIR, PROJECT_DIR, SUPPORTED_EXTENSIONS
+from app import OUTPUT_DIR, PROJECT_DIR, SUPPORTED_EXTENSIONS, __version__ as APP_VERSION
 from gui.theme import (
     PALETTE,
     accent_button,
@@ -32,7 +32,7 @@ class MainWindow:
 
     def __init__(self):
         self.root = ctk.CTk()
-        self.root.title("MinerU")
+        self.root.title(f"MinerU {APP_VERSION}")
 
         # Init DPI scaling with the live root
         init_dp_scale(self.root)

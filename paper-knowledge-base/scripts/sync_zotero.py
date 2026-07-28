@@ -613,6 +613,23 @@ def cleanup_deleted_items(cursor, collection, since_version: int = 0) -> int:
 def main():
     import argparse
 
+    # ── 参数解析 ──────────────────────────────────────────
+    parser = argparse.ArgumentParser(description="从 Zotero 同步论文到知识库")
+    parser.add_argument("--version", action="store_true",
+                        help="显示版本号并退出")
+
+    # 快速路径：--version 不触发任何延迟导入
+    known, _ = parser.parse_known_args()
+    if known.version:
+        _version_file = REPO_ROOT.parent / "_version.py"
+        if _version_file.exists():
+            _ver: dict[str, str] = {}
+            exec(_version_file.read_text(encoding="utf-8"), _ver)
+            print(f"paper-knowledge-base {_ver.get('__version__', 'unknown')}")
+        else:
+            print("paper-knowledge-base unknown (no _version.py)")
+        sys.exit(0)
+
     # 延迟导入（知识库环境中的依赖）
     import chromadb
     from sentence_transformers import SentenceTransformer

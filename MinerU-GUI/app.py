@@ -8,6 +8,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+# ── Version ──────────────────────────────────────────────────
+from _version import __version__  # noqa: F401 — re-exported for use by other modules
+
 # ── 配置 ──────────────────────────────────────────────────
 PROJECT_DIR = Path(__file__).parent.resolve()
 OUTPUT_DIR = PROJECT_DIR / "output"
