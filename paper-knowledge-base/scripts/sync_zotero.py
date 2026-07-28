@@ -20,11 +20,8 @@ import os
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
-import traceback
 from pathlib import Path
-from typing import Optional
 
 # ── 路径 ─────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,8 +48,14 @@ _ZOTERO_CONN: sqlite3.Connection | None = None
 # ── 日志 ─────────────────────────────────────────────────────
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
-# 日志：stdout 用 UTF-8 编码（避免 ✓φ∑ 等 Unicode 在 GBK 终端报错）
-_log_stream = open(sys.__stdout__.fileno(), mode="w", encoding="utf-8", buffering=1, closefd=False)
+# 日志沿用当前 stdout；不要重新包装进程文件描述符，否则导入模块的宿主
+# （pytest、IDE、notebook 等）可能在包装器销毁时失去自己的输出流。
+_log_stream = sys.stdout
+if hasattr(_log_stream, "reconfigure"):
+    try:
+        _log_stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -99,6 +102,7 @@ def get_paper_items(
     cursor,
     since_item_id: int = 0,
     since_version: int = 0,
+    pending_item_ids: list[int] | None = None,
 ) -> list[dict]:
     """获取 Zotero 中所有可检索的论文项及其元数据。
 
@@ -108,12 +112,21 @@ def get_paper_items(
     Args:
         since_item_id: 仅返回 itemID > 此值的项（增量同步）
         since_version: 仅返回 version > 此值的项（增量同步）
+        pending_item_ids: 无论版本如何都重新返回的失败项目 ID
 
     Returns:
         论文项字典列表，每项包含 title, abstractNote, doi, 等
     """
+    pending_ids = sorted({int(item_id) for item_id in (pending_item_ids or [])})
+    pending_clause = ""
+    params: list[int] = [since_item_id, since_version]
+    if pending_ids:
+        placeholders = ",".join("?" for _ in pending_ids)
+        pending_clause = f" OR i.itemID IN ({placeholders})"
+        params.extend(pending_ids)
+
     rows = cursor.execute(
-        """
+        f"""
         SELECT i.itemID, i.key, i.dateAdded, i.dateModified, i.version,
                t.typeName,
                (SELECT v.value FROM itemData d JOIN itemDataValues v
@@ -144,10 +157,10 @@ def get_paper_items(
         JOIN itemTypes t ON i.itemTypeID = t.itemTypeID
         WHERE t.typeName IN ('journalArticle','conferencePaper','thesis','preprint','computerProgram')
           AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-          AND (i.itemID > ? OR i.version > ?)
+          AND (i.itemID > ? OR i.version > ?{pending_clause})
         ORDER BY i.itemID
         """,
-        (since_item_id, since_version),
+        params,
     ).fetchall()
 
     items = []
@@ -168,7 +181,7 @@ def get_paper_items(
     return items
 
 
-def get_attachment_info(cursor, parent_item_id: int) -> Optional[dict]:
+def get_attachment_info(cursor, parent_item_id: int) -> dict | None:
     """获取论文的附件信息。
 
     优先返回 PDF 附件；如无 PDF，则查找 .docx 附件。
@@ -180,11 +193,6 @@ def get_attachment_info(cursor, parent_item_id: int) -> Optional[dict]:
         {"key": items.key, "content_type": "application/pdf"|"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
         如果没有附件则返回 None
     """
-    content_types = [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ]
-
     row = cursor.execute(
         """
         SELECT i.key, ia.contentType
@@ -326,19 +334,23 @@ def load_checkpoint() -> dict:
     """从检查点文件加载上次同步状态。
 
     Returns:
-        {"last_item_id": int, "last_version": int}
+        {"last_item_id": int, "last_version": int, "pending_item_ids": list[int]}
     """
-    default = {"last_item_id": 0, "last_version": 0}
+    default = {"last_item_id": 0, "last_version": 0, "pending_item_ids": []}
     if not CHECKPOINT_FILE.exists():
         return default
 
     try:
         data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+        pending = data.get("pending_item_ids", [])
+        if not isinstance(pending, list):
+            pending = []
         return {
             "last_item_id": data.get("last_item_id", 0),
             "last_version": data.get("last_version", 0),
+            "pending_item_ids": [int(item_id) for item_id in pending],
         }
-    except (json.JSONDecodeError, KeyError) as e:
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError, KeyError) as e:
         logger.warning("检查点文件损坏 (%s)，将重新全量同步", e)
         return default
 
@@ -363,7 +375,7 @@ def resolve_attachment_path(
     attachment_key: str,
     content_type: str,
     max_size_mb: int = 25,
-) -> Optional[Path]:
+) -> Path | None:
     """在 Zotero storage/ 目录中查找附件文件。
 
     根据 content_type 查找对应后缀的文件（.pdf 或 .docx）。
@@ -422,7 +434,7 @@ def extract_with_mineru(
     *,
     lang: str = "en",
     max_pages: int = 20,
-) -> Optional[dict]:
+) -> dict | None:
     """通过 MinerU subprocess 提取文档文本。
 
     支持 PDF 和 Word (.docx) 文件，调用 mineru_extract.py（在 MinerU venv 中运行），
@@ -473,6 +485,7 @@ def extract_with_mineru(
             encoding="utf-8",
             errors="replace",
             env=env,
+            check=False,
         )
 
         # 解析输出 JSON
@@ -543,12 +556,12 @@ def get_or_create_collection(client):
         )
 
 
-def deduplicate_paper(doi: str, title: str, collection) -> Optional[str]:
+def deduplicate_paper(doi: str, title: str, collection) -> str | None:
     """检查论文是否已在 ChromaDB 中。
 
-    三层去重策略:
+    两层去重策略:
     1. DOI 精确匹配（优先）
-    2. 标题 $contains 匹配（回退）
+    2. 规范化标题精确匹配（回退）
 
     Args:
         doi: DOI 字符串（可能为空）
@@ -574,27 +587,122 @@ def deduplicate_paper(doi: str, title: str, collection) -> Optional[str]:
         except Exception as e:
             logger.debug("  DOI 查询异常: %s", e)
 
-    # 第二层：标题相似度匹配
+    # 第二层：规范化标题精确匹配。Chroma metadata 的 $contains 对字符串
+    # 不是子串查询，因此分页读取元数据后在 Python 中比较。
     if title:
-        # 提取标题中的关键词（取前 2 个非停用词）
-        import re
-        title_norm = re.sub(r"[^\w\s]", "", title).lower().strip()
-        words = [w for w in title_norm.split() if len(w) > 3]
-        if len(words) >= 2:
-            query_terms = " ".join(words[:3])
-            try:
+        title_norm = _normalize_title(title)
+        offset = 0
+        batch_size = 1000
+        try:
+            while True:
                 result = collection.get(
                     include=["metadatas"],
-                    where={"title": {"$contains": query_terms}},
-                    limit=3,
+                    limit=batch_size,
+                    offset=offset,
                 )
-                if result["ids"]:
-                    logger.debug("  标题匹配成功: '%s' -> %s", query_terms, result["ids"][0])
-                    return result["metadatas"][0].get("paper_id", "")
-            except Exception as e:
-                logger.debug("  标题查询异常: %s", e)
+                ids = result.get("ids") or []
+                metadatas = result.get("metadatas") or []
+                for doc_id, metadata in zip(ids, metadatas):
+                    if metadata and _normalize_title(metadata.get("title", "")) == title_norm:
+                        matched_id = metadata.get("paper_id", doc_id.split("#")[0])
+                        logger.debug("  标题匹配成功: '%s' -> %s", title_norm, matched_id)
+                        return matched_id
+                if len(ids) < batch_size:
+                    break
+                offset += len(ids)
+        except Exception as e:
+            logger.debug("  标题查询异常: %s", e)
 
     return None
+
+
+def _normalize_title(title: str) -> str:
+    """Normalize a title for conservative duplicate detection."""
+    import re
+
+    return " ".join(re.sub(r"[^\w\s]", " ", title, flags=re.UNICODE).casefold().split())
+
+
+def _get_existing_zotero_item_id(collection, paper_id: str) -> int | None:
+    """Return the Zotero item id stored for an existing paper, if any."""
+    try:
+        result = collection.get(
+            include=["metadatas"],
+            where={"paper_id": paper_id},
+            limit=1,
+        )
+        metadatas = result.get("metadatas") or []
+        if metadatas:
+            item_id = metadatas[0].get("zotero_item_id")
+            return int(item_id) if item_id is not None else None
+    except (TypeError, ValueError) as e:
+        logger.debug("  已有 Zotero itemID 无效: %s", e)
+    except Exception as e:
+        logger.debug("  查询已有 Zotero itemID 失败: %s", e)
+    return None
+
+
+def replace_paper_chunks(
+    collection,
+    *,
+    paper_id: str,
+    ids: list[str],
+    embeddings,
+    documents: list[str],
+    metadatas: list[dict],
+    batch_size: int = 50,
+) -> None:
+    """Replace one paper while restoring its previous chunks on failure."""
+    old = collection.get(
+        include=["documents", "metadatas", "embeddings"],
+        where={"paper_id": paper_id},
+    )
+    old_ids = old.get("ids") or []
+    old_documents = old.get("documents") or []
+    old_metadatas = old.get("metadatas") or []
+    old_embeddings = old.get("embeddings")
+    if hasattr(old_embeddings, "tolist"):
+        old_embeddings = old_embeddings.tolist()
+    old_embeddings = old_embeddings or []
+
+    inserted_ids: list[str] = []
+    try:
+        if old_ids:
+            collection.delete(ids=old_ids)
+
+        for start in range(0, len(ids), batch_size):
+            end = start + batch_size
+            batch_embeddings = embeddings[start:end]
+            if hasattr(batch_embeddings, "tolist"):
+                batch_embeddings = batch_embeddings.tolist()
+            collection.add(
+                ids=ids[start:end],
+                embeddings=batch_embeddings,
+                documents=documents[start:end],
+                metadatas=metadatas[start:end],
+            )
+            inserted_ids.extend(ids[start:end])
+    except Exception:
+        if inserted_ids:
+            try:
+                collection.delete(ids=inserted_ids)
+            except Exception as cleanup_error:
+                logger.error("  清理失败的新 chunks 时出错: %s", cleanup_error)
+
+        if old_ids:
+            try:
+                for start in range(0, len(old_ids), batch_size):
+                    end = start + batch_size
+                    collection.add(
+                        ids=old_ids[start:end],
+                        embeddings=old_embeddings[start:end],
+                        documents=old_documents[start:end],
+                        metadatas=old_metadatas[start:end],
+                    )
+                logger.info("  已恢复 %d 个旧 chunks", len(old_ids))
+            except Exception as restore_error:
+                logger.critical("  旧 chunks 恢复失败，需要人工修复: %s", restore_error)
+        raise
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -670,16 +778,12 @@ def main():
 
     # 延迟导入（知识库环境中的依赖）
     import chromadb
-    from sentence_transformers import SentenceTransformer
-
     # 知识库模块
     sys.path.insert(0, str(SCRIPTS_DIR))
     from utils import (
         CHUNK_MAX_WORDS,
         chunk_text,
-        clean_text,
         compute_paper_id_from_doi,
-        extract_text_from_markdown,
         extract_year_from_date,
     )
 
@@ -711,7 +815,7 @@ def main():
             _DEFAULT_MINERU_DIR if _DEFAULT_MINERU_DIR.is_dir() else None
         )
 
-    global MINERU_DIR, MINERU_PYTHON, MINERU_SCRIPT
+    global MINERU_DIR, MINERU_PYTHON
     MINERU_DIR = _md
     MINERU_PYTHON = (_md / ".venv" / "Scripts" / "python.exe") if _md else None
     # MINERU_SCRIPT 不受此影响，始终在项目 scripts/ 下
@@ -743,7 +847,7 @@ def main():
 
     # ── 加载检查点 ─────────────────────────────────────────
     if args.full_rescan:
-        checkpoint = {"last_item_id": 0, "last_version": 0}
+        checkpoint = {"last_item_id": 0, "last_version": 0, "pending_item_ids": []}
         logger.info("强制全量重建")
     else:
         checkpoint = load_checkpoint()
@@ -758,22 +862,22 @@ def main():
         cursor,
         since_item_id=checkpoint["last_item_id"],
         since_version=checkpoint["last_version"],
+        pending_item_ids=checkpoint.get("pending_item_ids", []),
     )
     logger.info("待处理的论文数: %d", len(items))
-
-    if not items:
-        logger.info("没有新论文需要同步")
-        zotero_conn.close()
-        return
-
-    # ── 加载模型 ───────────────────────────────────────────
-    logger.info("加载嵌入模型...")
-    model = load_bi_encoder()
 
     # ── 连接 ChromaDB ──────────────────────────────────────
     logger.info("连接向量数据库...")
     client = chromadb.PersistentClient(str(CHROMA_DIR))
     collection = get_or_create_collection(client)
+
+    # Dry-run 不会生成嵌入；删除-only 同步也不需要加载大模型。
+    model = None
+    if items and not dry_run:
+        logger.info("加载嵌入模型...")
+        model = load_bi_encoder()
+    elif not items:
+        logger.info("没有新增或修改的论文，继续检查删除同步")
 
     # ── 加载 collections 表到内存（N+1 优化） ──────────────
     logger.info("加载 Zotero 分类结构...")
@@ -794,6 +898,7 @@ def main():
         "imported": 0,
         "errors": [],
     }
+    pending_item_ids: set[int] = set()
 
     mineru_output_dir = REPO_ROOT / "kb" / "mineru_cache"
     mineru_output_dir.mkdir(parents=True, exist_ok=True)
@@ -818,16 +923,23 @@ def main():
 
         # 2. 去重检查
         existing_id = deduplicate_paper(item["doi"], item["title"], collection)
-        if existing_id and not args.full_rescan:
-            logger.info("  -> 跳过: 已在知识库中 (paper_id=%s)", existing_id)
-            stats["skipped_dup"] += 1
-            continue
+        if existing_id:
+            existing_zotero_item_id = _get_existing_zotero_item_id(collection, existing_id)
+            is_same_zotero_item = existing_zotero_item_id == item_id
+            if not args.full_rescan and not is_same_zotero_item:
+                logger.info("  -> 跳过: 已在知识库中 (paper_id=%s)", existing_id)
+                stats["skipped_dup"] += 1
+                continue
+            # 已同步 Zotero 项的版本变化应覆盖原记录；全量重建也沿用已有 ID。
+            paper_id = existing_id
+            logger.debug("  更新已有论文: paper_id=%s", paper_id)
 
         # 3. 获取附件
         attachment = get_attachment_info(cursor, item_id)
         if not attachment:
             logger.info("  -> 跳过: 无 PDF 或 Word 附件")
             stats["skipped_no_attachment"] += 1
+            pending_item_ids.add(item_id)
             continue
 
         att_key = attachment["key"]
@@ -836,6 +948,7 @@ def main():
         if not att_path:
             logger.info("  -> 跳过: storage 中未找到附件 (key=%s, type=%s)", att_key, content_type)
             stats["skipped_no_attachment"] += 1
+            pending_item_ids.add(item_id)
             continue
 
         type_label = "Word" if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" else "PDF"
@@ -850,12 +963,14 @@ def main():
         if not mineru_result:
             logger.info("  -> 跳过: MinerU 提取失败")
             stats["skipped_extract_fail"] += 1
+            pending_item_ids.add(item_id)
             continue
 
         doc_text = mineru_result.get("text", "")
         if not doc_text or len(doc_text.strip()) < 20:
             logger.info("  -> 跳过: 提取文本过短")
             stats["skipped_extract_fail"] += 1
+            pending_item_ids.add(item_id)
             continue
 
         logger.debug("  提取文本长度: %d 字符", len(doc_text))
@@ -878,6 +993,7 @@ def main():
         if not chunks:
             logger.info("  -> 跳过: 分块结果为空")
             stats["skipped_extract_fail"] += 1
+            pending_item_ids.add(item_id)
             continue
 
         logger.debug("  分块: %d 个", len(chunks))
@@ -914,6 +1030,8 @@ def main():
 
         # 9. 生成嵌入
         try:
+            if model is None:
+                raise RuntimeError("嵌入模型未加载")
             embeddings = model.encode(
                 documents,
                 batch_size=32,
@@ -923,46 +1041,30 @@ def main():
         except Exception as e:
             logger.warning("  嵌入失败: %s", e)
             stats["errors"].append((item["title"], str(e)))
+            pending_item_ids.add(item_id)
             continue
 
         # 10. 写入 ChromaDB
         try:
-            # 先清除该 paper_id 的旧数据
-            old_ids = collection.get(
-                include=[],
-                where={"paper_id": paper_id},
-            )["ids"]
-            if old_ids:
-                collection.delete(ids=old_ids)
-                logger.debug("  已清理旧 chunks: %d 个", len(old_ids))
-
-            # 批量写入
-            batch_size = 50
-            inserted_ids = []
-            for i in range(0, len(ids), batch_size):
-                batch_end = i + batch_size
-                collection.add(
-                    ids=ids[i:batch_end],
-                    embeddings=embeddings[i:batch_end].tolist(),
-                    documents=documents[i:batch_end],
-                    metadatas=metadatas[i:batch_end],
-                )
-                inserted_ids.extend(ids[i:batch_end])
-
+            replace_paper_chunks(
+                collection,
+                paper_id=paper_id,
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
+            )
         except Exception as e:
             logger.warning("  写入 ChromaDB 失败: %s", e)
-            try:
-                collection.delete(ids=inserted_ids)
-                logger.info("  已回滚 %d 个 chunks", len(inserted_ids))
-            except Exception:
-                pass
             stats["errors"].append((item["title"], str(e)))
+            pending_item_ids.add(item_id)
             continue
 
         stats["imported"] += 1
         logger.info("  ✓ 导入成功 (%d chunks)", len(chunks))
 
     # ── 删除同步 ───────────────────────────────────────────
+    removed = 0
     if not dry_run:
         logger.info("检查 Zotero 中已删除的论文...")
         try:
@@ -978,12 +1080,15 @@ def main():
         save_checkpoint({
             "last_item_id": max_item_id,
             "last_version": current_version,
+            "pending_item_ids": sorted(pending_item_ids),
         })
         logger.info("检查点已保存 (item_id=%d, version=%d)", max_item_id, current_version)
+        if pending_item_ids:
+            logger.warning("  %d 个项目将在下次同步时重试", len(pending_item_ids))
 
     # ── 重建 FTS 索引 ─────────────────────────────────────
-    if not dry_run and not args.skip_build_index and stats["imported"] > 0:
-        logger.info("\n检测到新论文，重建文本搜索索引...")
+    if not dry_run and not args.skip_build_index and (stats["imported"] > 0 or removed > 0):
+        logger.info("\n检测到知识库变更，重建文本搜索索引...")
         try:
             from build_index import main as build_index_main
             build_index_main()

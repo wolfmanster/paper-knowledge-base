@@ -13,7 +13,6 @@
 
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -63,26 +62,37 @@ def generate_collection_info() -> dict[str, Any]:
     try:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         collection = client.get_collection(COLLECTION_NAME)
-        count = collection.count()
+        chunk_count = collection.count()
     except Exception as e:
         logger.warning("读取 ChromaDB 失败: %s", e)
         return _default_info()
 
-    if count == 0:
+    if chunk_count == 0:
         return _default_info()
 
     # 读取所有标题
     try:
         all_data = collection.get(include=["metadatas"])
-        titles: list[str] = [
-            m.get("title", "") for m in (all_data.get("metadatas") or []) if m
-        ]
+        papers: dict[str, str] = {}
+        for index, metadata in enumerate(all_data.get("metadatas") or []):
+            if not metadata:
+                continue
+            paper_id = str(
+                metadata.get("paper_id")
+                or metadata.get("zotero_key")
+                or metadata.get("filename")
+                or f"unknown-{index}"
+            )
+            papers.setdefault(paper_id, metadata.get("title", ""))
+        titles = list(papers.values())
+        paper_count = len(papers)
     except Exception as e:
         logger.warning("读取元数据失败: %s", e)
         return {
             "name": "My Paper Collection",
-            "description": f"A collection of {count} academic papers.",
-            "paper_count": count,
+            "description": f"A collection containing {chunk_count} searchable text chunks.",
+            "paper_count": 0,
+            "chunk_count": chunk_count,
             "keywords": [],
             "language": "en",
         }
@@ -99,10 +109,11 @@ def generate_collection_info() -> dict[str, Any]:
     return {
         "name": "My Paper Collection",
         "description": (
-            f"A collection of {count} academic papers"
+            f"A collection of {paper_count} academic papers"
             + (f" covering topics related to {', '.join(keywords[:5])}." if keywords else ".")
         ),
-        "paper_count": count,
+        "paper_count": paper_count,
+        "chunk_count": chunk_count,
         "keywords": keywords,
         "language": lang,
     }
@@ -114,6 +125,7 @@ def _default_info() -> dict[str, Any]:
         "name": "My Paper Collection",
         "description": "A collection of academic papers. Import papers first to generate collection info.",
         "paper_count": 0,
+        "chunk_count": 0,
         "keywords": [],
         "language": "en",
     }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import traceback
 from pathlib import Path
 
 from gui._core import run_core
@@ -54,6 +55,30 @@ def _run_batch_conversion(
     device: str,
     vlm_describe: bool = False,
 ) -> None:
+    try:
+        _run_batch_conversion_inner(
+            file_paths,
+            backend,
+            lang,
+            method,
+            max_pages,
+            device,
+            vlm_describe,
+        )
+    finally:
+        if _done_event is not None:
+            _done_event.set()
+
+
+def _run_batch_conversion_inner(
+    file_paths: list[str],
+    backend: str,
+    lang: str,
+    method: str,
+    max_pages: int,
+    device: str,
+    vlm_describe: bool = False,
+) -> None:
     total = len(file_paths)
     success_count = 0
     fail_count = 0
@@ -66,18 +91,23 @@ def _run_batch_conversion(
         _enqueue(f"[{i}/{total}] {input_path.name}\n")
         _enqueue(f"{'=' * 50}\n")
 
-        ok, _, _, _ = run_core(
-            file_path=file_path,
-            backend=backend,
-            lang=lang,
-            method=method,
-            max_pages=max_pages,
-            device=device,
-            vlm_describe=vlm_describe,
-            output_dir_str=None,
-            log=_enqueue,
-            batch_index=(i, total),
-        )
+        try:
+            ok, _, _, _ = run_core(
+                file_path=file_path,
+                backend=backend,
+                lang=lang,
+                method=method,
+                max_pages=max_pages,
+                device=device,
+                vlm_describe=vlm_describe,
+                output_dir_str=None,
+                log=_enqueue,
+                batch_index=(i, total),
+            )
+        except Exception as exc:  # noqa: BLE001 — keep the GUI worker alive
+            ok = False
+            _enqueue(f"ERROR [{input_path.name}]: {exc}")
+            _enqueue(traceback.format_exc())
         if ok:
             success_count += 1
         else:
@@ -89,9 +119,6 @@ def _run_batch_conversion(
     if fail_count:
         _enqueue(f"   ✗ 失败: {fail_count}\n")
     _enqueue(f"{'=' * 50}\n")
-
-    if _done_event is not None:
-        _done_event.set()
 
 
 # ── Internal helpers ────────────────────────────────────

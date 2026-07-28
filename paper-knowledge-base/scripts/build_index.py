@@ -8,18 +8,23 @@
 """
 
 import logging
+import os
 import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-# Windows GBK/CP936 兼容：确保输出不出错
-import io
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# Windows GBK/CP936 兼容：调整现有流，不替换宿主进程的 stdout。
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 import chromadb
 from tqdm import tqdm
+from utils import extract_abstract, generate_summary
 
 # ── 路径 ─────────────────────────────────────────────────────
 
@@ -44,8 +49,6 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
-
-from utils import extract_abstract, generate_summary
 
 
 # ── 数据库初始化 ─────────────────────────────────────────────
@@ -182,9 +185,17 @@ def main():
 
     logger.info("共加载 %d 篇独立论文", len(papers_data))
 
-    # 初始化 SQLite
+    # 在同一目录构建临时数据库，成功后原子替换现有索引。
     logger.info("初始化文本索引数据库 %s", INDEX_DB)
-    conn = sqlite3.connect(str(INDEX_DB))
+    with tempfile.NamedTemporaryFile(
+        prefix="index-",
+        suffix=".db.tmp",
+        dir=INDEX_DB.parent,
+        delete=False,
+    ) as temp_handle:
+        temp_path = Path(temp_handle.name)
+    conn = sqlite3.connect(str(temp_path))
+    build_succeeded = False
 
     try:
         init_db(conn)
@@ -253,9 +264,14 @@ def main():
         logger.info("  SQLite 记录数:   %d (FTS: %d)", count, fts_count)
         logger.info("  数据库文件:      %s", INDEX_DB)
         logger.info("  耗时:           %.1f 秒", elapsed)
+        build_succeeded = True
 
     finally:
         conn.close()
+        if build_succeeded:
+            os.replace(temp_path, INDEX_DB)
+        else:
+            temp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

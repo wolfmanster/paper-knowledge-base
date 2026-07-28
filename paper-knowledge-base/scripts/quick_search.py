@@ -20,10 +20,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
-# Windows GBK/CP936 兼容：强制 stdout 使用 utf-8
-import io
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# Windows GBK/CP936 兼容：调整现有流，不替换宿主进程的 stdout。
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 INDEX_DB = BASE_DIR / "kb" / "index.db"

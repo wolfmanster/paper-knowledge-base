@@ -14,10 +14,12 @@ import math
 import sys
 from pathlib import Path
 
-# Windows GBK/CP936 兼容：强制 stdout 使用 utf-8
-import io
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# Windows GBK/CP936 兼容：调整现有流，不替换宿主进程的 stdout。
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
@@ -163,7 +165,7 @@ def search(query: str, top_k: int = 5) -> list:
     results = collection.query(
         query_embeddings=query_emb,
         n_results=initial_k,
-        include=["documents", "metadatas"],
+        include=["documents", "metadatas", "distances"],
     )
 
     if not results["ids"] or not results["ids"][0]:
@@ -181,8 +183,10 @@ def search(query: str, top_k: int = 5) -> list:
             zip(scores, ids, documents, metadatas), key=lambda x: x[0], reverse=True
         )[:top_k]
     else:
+        distances = results["distances"][0]
         ranked = [
-            (0.5, i, d, m) for i, d, m in zip(ids, documents, metadatas)
+            (1.0 - float(distance), i, d, m)
+            for distance, i, d, m in zip(distances, ids, documents, metadatas)
         ][:top_k]
 
     # 格式化输出

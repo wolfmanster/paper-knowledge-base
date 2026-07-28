@@ -141,17 +141,31 @@ def batch_convert(
 ) -> list[ConversionResult]:
     """Batch-convert multiple documents.
 
-    Accepts the same parameters as :func:`convert_document`.
+    Accepts the same parameters as :func:`convert_document`.  When
+    ``output_dir`` is provided, each document is written to its own
+    ``<output_dir>/<file-stem>/`` directory so image assets cannot collide.
     Returns results in the same order as the input list.
     """
     results: list[ConversionResult] = []
     total = len(file_paths)
+    used_output_names: set[str] = set()
 
     for i, fp in enumerate(file_paths):
         logs: list[str] = []
 
         def _log(line: str, _logs=logs) -> None:
             _logs.append(line)
+
+        item_output_dir: str | None = None
+        if output_dir is not None:
+            base_name = Path(fp).stem
+            output_name = base_name
+            duplicate_index = 2
+            while output_name.casefold() in used_output_names:
+                output_name = f"{base_name}-{duplicate_index}"
+                duplicate_index += 1
+            used_output_names.add(output_name.casefold())
+            item_output_dir = str(Path(output_dir) / output_name)
 
         success, output_md, out_dir, error = run_core(
             file_path=str(fp),
@@ -161,7 +175,7 @@ def batch_convert(
             max_pages=max_pages,
             device=device,
             vlm_describe=vlm_describe,
-            output_dir_str=str(output_dir) if output_dir is not None else None,
+            output_dir_str=item_output_dir,
             log=_log,
             batch_index=(i + 1, total),
         )

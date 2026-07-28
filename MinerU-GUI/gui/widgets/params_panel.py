@@ -5,8 +5,8 @@ from __future__ import annotations
 from tkinter import BooleanVar, StringVar
 
 import customtkinter as ctk
-
 from app import BACKENDS, LANGUAGES
+
 from gui.theme import PALETTE, styled_entry, styled_option_menu, text_font
 
 METHODS = ["auto", "txt", "ocr"]
@@ -136,7 +136,7 @@ class ParamsPanel(ctk.CTkFrame):
 
     def _on_backend_change(self, choice=None):
         is_hybrid = self.backend_var.get() == "hybrid-auto-engine"
-        if is_hybrid is False:
+        if is_hybrid:
             self.device_combo.configure(state="disabled")
             self.device_var.set("gpu")
         else:
