@@ -1,27 +1,22 @@
 # MinerU GUI
 
-MinerU 文档解析桌面 GUI — 基于 CustomTkinter。
+MinerU 文档解析桌面 GUI + Python API — 基于 CustomTkinter。
+
+本目录是 [paper-knowledge-base monorepo](https://github.com/wolfmanster/paper-knowledge-base) 的子项目，也可独立使用。
 
 ## 快速开始
 
-```bat
-:: 1. 克隆仓库
-git clone https://github.com/你的用户名/mineru-gui
-cd mineru-gui
+```bash
+# 注册包（monorepo 中首次使用）
+cd MinerU-GUI
+python -m pip install -e .
 
-:: 2. 一键安装（虚拟环境 + GUI 依赖）
-setup.bat
-
-:: 3. 安装 MinerU 引擎（核心依赖，必须用 3.x）
-.venv\Scripts\pip install "mineru[core]>=3.0.0,<4.0.0"
-
-:: 4. 启动
-start.bat
+# 安装 MinerU 引擎（核心依赖，必须用 3.x）
+pip install "mineru[core]>=3.0.0,<4.0.0"
 ```
 
 > **注意**: MinerU 是核心解析引擎，安装时需联网下载模型文件。
 > 必须使用 MinerU **3.x** 版本（`<4.0.0`），4.x 尚未发布。
-> 如果已有 MinerU 环境，可直接将本项目的 `gui.py` 放在你的环境中运行。
 
 ## 依赖
 
@@ -49,15 +44,15 @@ start.bat
 
 ```bash
 # 方式一：pip 安装（推荐，import 路径干净）
-pip install -e /path/to/MinerU\ GUI
+pip install -e /path/to/MinerU/GUI
 #       ↑ "-e" = editable，代码修改后立即生效
 
 # 方式二：sys.path 临时添加
 import sys
-sys.path.insert(0, r"/path/to/MinerU GUI")
+sys.path.insert(0, r"/path/to/MinerU/GUI")
 
 # 无论哪种方式，都需确保 MinerU 引擎已安装
-pip install mineru[core]
+pip install "mineru[core]>=3.0.0,<4.0.0"
 ```
 
 ### 使用示例
@@ -94,8 +89,8 @@ result = convert_document("doc.pdf", output_dir="./my_output/doc")
 │   └── widgets/            # UI 组件
 ├── output/                 # 解析结果输出
 ├── requirements.txt        # Python 依赖
-├── setup.bat               # 安装脚本
-└── start.bat               # 启动脚本
+├── setup.bat               # 旧版安装脚本
+└── start.bat               # 旧版启动脚本
 ```
 
 ## 许可

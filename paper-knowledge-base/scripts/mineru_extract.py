@@ -37,9 +37,15 @@ try:
 except ImportError:
     _MINERU_GUI_DIR = os.environ.get("MINERU_GUI_DIR")
     if not _MINERU_GUI_DIR:
-        _default = Path(__file__).resolve().parent.parent.parent / "MinerU GUI"
-        if _default.exists():
-            _MINERU_GUI_DIR = str(_default)
+        # monorepo: scripts/mineru_extract.py → paper-knowledge-base/ → MinerU-GUI/
+        _monorepo = Path(__file__).resolve().parent.parent.parent / "MinerU-GUI"
+        if _monorepo.exists():
+            _MINERU_GUI_DIR = str(_monorepo)
+        else:
+            # 旧布局回退：scripts/mineru_extract.py → paper-knowledge-base/ → ../MinerU GUI
+            _old = Path(__file__).resolve().parent.parent.parent / "MinerU GUI"
+            if _old.exists():
+                _MINERU_GUI_DIR = str(_old)
     if _MINERU_GUI_DIR:
         sys.path.insert(0, _MINERU_GUI_DIR)
     try:

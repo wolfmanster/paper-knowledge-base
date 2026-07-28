@@ -27,19 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 # ── 路径 ─────────────────────────────────────────────────────
-# 尝试定位知识库根目录（兼容工作树环境）
-CANDIDATE_ROOTS = [
-    Path(__file__).resolve().parent.parent,                          # 普通目录
-    Path(__file__).resolve().parent.parent.parent.parent.parent,     # 工作树
-]
-
-REPO_ROOT: Path | None = None
-for _c in CANDIDATE_ROOTS:
-    if (_c / "Papers").exists() and (_c / "kb").exists():
-        REPO_ROOT = _c.resolve()
-        break
-if REPO_ROOT is None:
-    REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 CHROMA_DIR = REPO_ROOT / "kb" / "chroma"
