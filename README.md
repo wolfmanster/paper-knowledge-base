@@ -1,6 +1,6 @@
 # Paper Knowledge Base + MinerU GUI Monorepo
 
-论文知识库（语义搜索 + 文本检索）+ MinerU PDF 高精度提取 GUI + Python API 集成仓库。
+面向论文的本地知识库，提供语义与全文检索、Zotero 自动同步和 MinerU PDF 提取 GUI。
 
 **仓库地址**：https://github.com/wolfmanster/paper-knowledge-base
 
