@@ -1,7 +1,6 @@
 # Paper Knowledge Base
 
-本地论文知识库，基于语义搜索的锂离子电池热管理领域个人知识库。
-当前收录 **116 篇**论文，全部从 Zotero 经 MinerU pipeline 提取后存入向量库。
+本地论文知识库，基于语义搜索，从 Zotero 经 MinerU pipeline 提取后存入向量库。
 
 ## 项目框架
 
@@ -41,7 +40,7 @@ pip install -r requirements.txt
 python scripts/search.py
 
 # 单次语义查询（JSON 输出，含 Cross-Encoder 重排）
-python scripts/query.py "liquid cooling battery thermal management" 5
+python scripts/query.py "your search query" 5
 
 # 单次关键词查询（~10ms 响应）
 python scripts/query.py --mode text "topology optimization" 10
@@ -75,7 +74,7 @@ python scripts/query.py --mode text "topology optimization" 10
 
 ## 导入论文
 
-### 方式一：从 Zotero 同步（推荐，覆盖 116 篇）
+### 方式一：从 Zotero 同步（推荐）
 
 ```bash
 # 先在 MinerU venv 中注册包（仅首次）
@@ -85,7 +84,7 @@ python -m pip install -e .
 # 试运行（查看哪些论文会导入）
 python scripts/sync_zotero.py --mineru-dir /path/to/MinerU/GUI --dry-run
 
-# 全量重建（~3 小时 / 116 篇，每篇约 2-3 分钟）
+# 全量重建
 python scripts/sync_zotero.py --mineru-dir /path/to/MinerU/GUI --full-rescan
 python scripts/sync_zotero.py --mineru-dir /path/to/MinerU/GUI --full-rescan --skip-build-index  # 跳过 FTS 重建
 

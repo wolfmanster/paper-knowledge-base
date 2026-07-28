@@ -1,5 +1,5 @@
 """
-论文知识库 — 语义搜索 CLI（带 Cross-Encoder 二次重排）
+学术论文知识库 — 语义搜索 CLI（带 Cross-Encoder 二次重排）
 =====================================================
 交互式查询界面，支持中英文语义搜索。
 流程：Bi-Encoder 初检（ChromaDB）→ Cross-Encoder 重排 → 展示
@@ -230,7 +230,7 @@ def show_stats(collection):
 def interactive_loop(bi_encoder, cross_encoder, collection):
     console.print()
     mode = "Cross-Encoder 重排" if cross_encoder else "Bi-Encoder 检索（降级模式）"
-    console.rule(f"[bold green]📚 论文知识库 — {mode}[/bold green]")
+    console.rule(f"[bold green]🔍 论文知识库 — {mode}[/bold green]")
     console.print()
     console.print(
         f"[dim]数据库 {collection.count()} 个文本块 | "

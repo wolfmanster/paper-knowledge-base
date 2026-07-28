@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Monorepo: Paper Knowledge Base + MinerU GUI
 
-锂离子电池热管理领域论文知识库（语义搜索 + 文本搜索）+ MinerU PDF 高精度提取桌面 GUI + Python API，两者集成于同一仓库。
+论文知识库（语义搜索 + 文本检索）+ MinerU PDF 高精度提取桌面 GUI + Python API，两者集成于同一仓库。
 
 ## 常用命令
 
@@ -18,7 +18,7 @@ cd paper-knowledge-base && pip install -r requirements.txt
 python scripts/search.py
 
 # 语义搜索（JSON，供 Skill 调用）
-python scripts/query.py "liquid cooling battery thermal management" 5
+python scripts/query.py "your search query" 5
 
 # 关键词搜索（~10ms）
 python scripts/query.py --mode text "topology optimization" 10
@@ -150,4 +150,4 @@ gui.py → setup_ctk() → MainWindow
 
 ## paper-search Skill
 
-位于 `paper-knowledge-base/.claude/skills/paper-search/SKILL.md`，自动触发于电池热管理相关话题（PCM、液冷、热失控、拓扑优化等）。通过 Bash 调用 `query.py` 执行搜索。
+位于 `paper-knowledge-base/.claude/skills/paper-search/SKILL.md`，按配置的关键词自动触发搜索。通过 Bash 调用 `query.py` 执行。

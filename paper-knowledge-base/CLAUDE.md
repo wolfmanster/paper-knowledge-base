@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Paper Knowledge Base
 
-知识库包含 **116 篇**锂离子电池热管理领域的学术论文，全部从 Zotero 导入，经 MinerU pipeline auto + CPU 模式提取文本后存入 ChromaDB。支持语义搜索和文本关键词搜索。
+论文知识库，支持语义搜索和文本关键词搜索。
 
 ## 常用命令
 
@@ -20,7 +20,7 @@ python -m pip install -e .
 python scripts/search.py
 
 # 语义搜索（JSON 输出，供 Skill 调用）
-python scripts/query.py "liquid cooling battery thermal management" 5
+python scripts/query.py "your search query" 5
 
 # 获取某篇论文的全文（从 ChromaDB，不需要 PDF 文件）
 python scripts/query.py --get-paper-chunks "filename.pdf"
@@ -139,4 +139,4 @@ paper knowledge base/
 
 ## Available Skills
 
-- **paper-search** — 语义/文本搜索论文库，支持中英文。自动触发于电池热管理相关话题。
+- **paper-search** — 语义/文本搜索论文库，支持中英文。按配置的关键词自动触发。
