@@ -4,3 +4,8 @@ PyMuPDF>=1.24
 tqdm>=4.66
 rich>=13.7
 numpy>=1.24
+
+# PyTorch（sentence-transformers 和 chromadb 的传递依赖）
+# 默认从 PyPI 安装 CPU 版。如需 GPU 加速，请先手动安装：
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.0,<3.0
