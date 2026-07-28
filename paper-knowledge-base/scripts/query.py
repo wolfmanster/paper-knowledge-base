@@ -13,6 +13,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Windows GBK/CP936 兼容：调整现有流，不替换宿主进程的 stdout。
 if hasattr(sys.stdout, "reconfigure"):
@@ -21,7 +22,8 @@ if hasattr(sys.stdout, "reconfigure"):
     except (AttributeError, OSError):
         pass
 
-from sentence_transformers import CrossEncoder, SentenceTransformer
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder, SentenceTransformer
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -33,15 +35,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 CHROMA_DIR = BASE_DIR / "kb" / "chroma"
 COLLECTION_NAME = "papers"
 
-try:
-    import chromadb
-    from utils import extract_title_from_filename
-except ImportError as e:
-    print(json.dumps({"error": f"导入失败: {e}"}, ensure_ascii=False))
-    sys.exit(1)
-
-
-def _load_bi_encoder() -> SentenceTransformer:
+def _load_bi_encoder() -> "SentenceTransformer":
     """加载 Bi-Encoder，失败时打印错误并退出。"""
     model_path = (
         Path.home()
@@ -53,6 +47,8 @@ def _load_bi_encoder() -> SentenceTransformer:
         / "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
     )
     try:
+        from sentence_transformers import SentenceTransformer
+
         if model_path.exists():
             return SentenceTransformer(str(model_path))
         return SentenceTransformer(
@@ -65,6 +61,8 @@ def _load_bi_encoder() -> SentenceTransformer:
 def _load_cross_encoder():
     """加载 Cross-Encoder，失败返回 None（降级为 Bi-Encoder 模式）。"""
     try:
+        from sentence_transformers import CrossEncoder
+
         return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
     except Exception as e:
         sys.stderr.write(f"[WARN] Cross-Encoder 加载失败（仅使用 Bi-Encoder）: {e}\n")
@@ -74,6 +72,8 @@ def _load_cross_encoder():
 def _get_collection():
     """连接 ChromaDB 并获取论文集合，失败时打印错误并退出。"""
     try:
+        import chromadb
+
         client = chromadb.PersistentClient(str(CHROMA_DIR))
         return client.get_collection(COLLECTION_NAME)
     except ValueError:
@@ -190,6 +190,8 @@ def search(query: str, top_k: int = 5) -> list:
         ][:top_k]
 
     # 格式化输出
+    from utils import extract_title_from_filename
+
     output = []
     for score, doc_id, doc, meta in ranked:
         title = meta.get("title") or extract_title_from_filename(Path(meta.get("filename", "")))

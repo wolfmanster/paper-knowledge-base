@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import sqlite3
 import subprocess
@@ -20,6 +21,32 @@ import generate_collection_info
 import query as query_module
 import sync_zotero
 import watch_zotero
+
+
+def test_query_module_defers_sentence_transformers_import(monkeypatch):
+    """Text-mode CLI startup must not load the semantic-search dependencies."""
+
+    class BlockSentenceTransformers:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "sentence_transformers":
+                raise AssertionError("query.py imported sentence_transformers eagerly")
+            return None
+
+    blocker = BlockSentenceTransformers()
+    monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
+    existing_transformers = sys.modules.pop("sentence_transformers", None)
+
+    module_name = "query_without_semantic_dependencies"
+    spec = importlib.util.spec_from_file_location(module_name, SCRIPTS_DIR / "query.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+        if existing_transformers is not None:
+            sys.modules["sentence_transformers"] = existing_transformers
 
 
 class MetadataCollection:
