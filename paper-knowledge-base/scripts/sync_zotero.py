@@ -933,6 +933,14 @@ def main():
             logger.warning("文本索引重建失败: %s", e)
             logger.info("可稍后手动运行: python scripts/build_index.py")
 
+    # ── 更新集合描述信息 ──────────────────────────────────
+    if not dry_run:
+        try:
+            from generate_collection_info import main as gen_info_main
+            gen_info_main()
+        except Exception as e:
+            logger.warning("集合信息生成失败: %s", e)
+
     # ── 汇总 ──────────────────────────────────────────────
     elapsed = time.time() - _start_time
 

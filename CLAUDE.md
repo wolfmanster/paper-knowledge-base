@@ -29,6 +29,9 @@ python scripts/query.py --get-paper-chunks "filename.pdf"
 # 构建文本搜索索引
 python scripts/build_index.py
 
+# 更新论文集合描述信息（自动从 ChromaDB 提取关键词和数量）
+python scripts/generate_collection_info.py
+
 # Zotero 同步（monorepo 中自动定位 ../MinerU-GUI）
 python scripts/sync_zotero.py                                       # 增量同步
 python scripts/sync_zotero.py --dry-run                              # 试运行

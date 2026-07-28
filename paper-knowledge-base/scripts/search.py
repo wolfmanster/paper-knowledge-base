@@ -232,6 +232,23 @@ def interactive_loop(bi_encoder, cross_encoder, collection):
     mode = "Cross-Encoder 重排" if cross_encoder else "Bi-Encoder 检索（降级模式）"
     console.rule(f"[bold green]🔍 论文知识库 — {mode}[/bold green]")
     console.print()
+
+    # 显示集合描述
+    info_file = BASE_DIR / "kb" / "collection_info.json"
+    if info_file.exists():
+        try:
+            import json
+            info = json.loads(info_file.read_text(encoding="utf-8"))
+            desc = info.get("description", "")
+            count = info.get("paper_count", 0)
+            keywords = info.get("keywords", [])
+            if desc:
+                console.print(f"[dim]📚 {desc}[/dim]")
+            if keywords:
+                console.print(f"[dim]  关键词: {', '.join(keywords[:8])}[/dim]")
+        except Exception:
+            pass
+    console.print()
     console.print(
         f"[dim]数据库 {collection.count()} 个文本块 | "
         f"初检 {INITIAL_K} 条 → top-{FINAL_K} | "

@@ -44,6 +44,9 @@ python scripts/query.py "your search query" 5
 
 # 单次关键词查询（~10ms 响应）
 python scripts/query.py --mode text "topology optimization" 10
+ 
+# 更新论文集合描述信息（自动从 ChromaDB 提取关键词和数量）
+python scripts/generate_collection_info.py
 ```
 
 ## 搜索系统

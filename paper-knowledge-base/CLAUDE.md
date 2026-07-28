@@ -31,6 +31,9 @@ python scripts/query.py --mode text "topology optimization" 10
 # 构建文本搜索索引（导入新论文后运行）
 python scripts/build_index.py
 
+# 更新论文集合描述信息（自动从 ChromaDB 提取关键词和数量）
+python scripts/generate_collection_info.py
+
 # 导入新论文（PDF 放入 Papers/ 后，PyMuPDF 快速提取）
 python scripts/ingest.py
 
