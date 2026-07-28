@@ -26,3 +26,12 @@ env/
 # OS
 Thumbs.db
 .DS_Store
+
+# 运行时日志
+*.log
+
+# 测试缓存
+.pytest_cache/
+
+# Claude Code 工作树
+.claude/worktrees/
