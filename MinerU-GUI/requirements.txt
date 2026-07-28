@@ -2,6 +2,7 @@ customtkinter>=5.2.2
 windnd>=0.5.0
 loguru>=0.7.0
 
-# MinerU 引擎（含 PyTorch）：pip install "mineru[core]>=3.0.0,<4.0.0"
-# 如需 GPU 加速，请先手动安装对应 CUDA 版 PyTorch：
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# PyTorch（MinerU 引擎所需的传递依赖）
+# GPU 版：从 PyTorch 官方源安装 CUDA 12.1 版本
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.0,<3.0
