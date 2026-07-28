@@ -1,0 +1,19 @@
+# Claude project config (per-project, not committed)
+.claude/
+paper-knowledge-base/.claude/
+MinerU-GUI/.claude/
+
+# MinerU GUI window geometry
+MinerU-GUI/.window_geometry.json
+
+# Knowledge base data (generated at runtime)
+kb/
+paper-knowledge-base/kb/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
