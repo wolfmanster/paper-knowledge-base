@@ -804,6 +804,19 @@ def _get_existing_zotero_item_id(collection, paper_id: str) -> int | None:
     return None
 
 
+def is_duplicate_zotero_item(
+    existing_zotero_item_id: int | None,
+    zotero_item_id: int,
+) -> bool:
+    """Whether a matched paper belongs to a different Zotero item.
+
+    A full rescan refreshes the source item already represented in the vector
+    store, but must not make a second Zotero entry for the same paper eligible
+    for extraction and indexing.
+    """
+    return existing_zotero_item_id != zotero_item_id
+
+
 def replace_paper_chunks(
     collection,
     *,
@@ -1095,12 +1108,15 @@ def _main_unlocked():
         existing_id = deduplicate_paper(item["doi"], item["title"], collection)
         if existing_id:
             existing_zotero_item_id = _get_existing_zotero_item_id(collection, existing_id)
-            is_same_zotero_item = existing_zotero_item_id == item_id
-            if not args.full_rescan and not is_same_zotero_item:
-                logger.info("  -> 跳过: 已在知识库中 (paper_id=%s)", existing_id)
+            if is_duplicate_zotero_item(existing_zotero_item_id, item_id):
+                logger.info(
+                    "  -> 跳过重复 Zotero 条目: 已由 itemID=%s 导入 (paper_id=%s)",
+                    existing_zotero_item_id if existing_zotero_item_id is not None else "未知来源",
+                    existing_id,
+                )
                 stats["skipped_dup"] += 1
                 continue
-            # 已同步 Zotero 项的版本变化应覆盖原记录；全量重建也沿用已有 ID。
+            # 已同步 Zotero 项的版本变化应覆盖原记录；全量重扫也沿用已有 ID。
             paper_id = existing_id
             logger.debug("  更新已有论文: paper_id=%s", paper_id)
 

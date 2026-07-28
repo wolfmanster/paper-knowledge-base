@@ -49,6 +49,75 @@ def test_title_dedup_uses_normalized_exact_match():
     assert sync_zotero.deduplicate_paper("", "a useful paper extended", collection) is None
 
 
+def test_duplicate_zotero_item_detection_distinguishes_the_source_item():
+    assert sync_zotero.is_duplicate_zotero_item(101, 202)
+    assert not sync_zotero.is_duplicate_zotero_item(101, 101)
+    assert sync_zotero.is_duplicate_zotero_item(None, 202)
+
+
+def test_full_rescan_skips_duplicate_before_mineru_extraction(tmp_path, monkeypatch):
+    zotero_dir = tmp_path / "Zotero"
+    (zotero_dir / "storage").mkdir(parents=True)
+    extractor_calls: list[Path] = []
+
+    class Cursor:
+        def execute(self, query, params=()):
+            return []
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+    class Client:
+        def __init__(self, path):
+            self.path = path
+
+    item = {
+        "item_id": 202,
+        "key": "DUPLICATE",
+        "doi": "10.1000/example",
+        "title": "Duplicate paper",
+    }
+    monkeypatch.setitem(sys.modules, "chromadb", types.SimpleNamespace(PersistentClient=Client))
+    monkeypatch.setitem(
+        sys.modules,
+        "generate_collection_info",
+        types.SimpleNamespace(main=lambda: None),
+    )
+    monkeypatch.setattr(sync_zotero, "get_zotero_db_connection", lambda _: Connection())
+    monkeypatch.setattr(sync_zotero, "check_zotero_version", lambda _: 1)
+    monkeypatch.setattr(sync_zotero, "get_paper_items", lambda *args, **kwargs: [item])
+    monkeypatch.setattr(sync_zotero, "get_or_create_collection", lambda _: object())
+    monkeypatch.setattr(sync_zotero, "load_bi_encoder", lambda: object())
+    monkeypatch.setattr(sync_zotero, "deduplicate_paper", lambda *args: "paper-1")
+    monkeypatch.setattr(sync_zotero, "_get_existing_zotero_item_id", lambda *args: 101)
+    monkeypatch.setattr(
+        sync_zotero,
+        "extract_with_mineru",
+        lambda path, *args, **kwargs: extractor_calls.append(path),
+    )
+    monkeypatch.setattr(sync_zotero, "cleanup_deleted_items", lambda *args: 0)
+    monkeypatch.setattr(sync_zotero, "save_checkpoint", lambda _: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sync_zotero.py",
+            "--zotero-dir",
+            str(zotero_dir),
+            "--full-rescan",
+            "--skip-build-index",
+        ],
+    )
+
+    sync_zotero._main_unlocked()
+
+    assert extractor_calls == []
+
+
 def test_checkpoint_round_trip_preserves_pending_items(tmp_path, monkeypatch):
     checkpoint = tmp_path / "checkpoint.json"
     monkeypatch.setattr(sync_zotero, "CHECKPOINT_FILE", checkpoint)
