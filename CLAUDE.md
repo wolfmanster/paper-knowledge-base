@@ -135,3 +135,7 @@ gui.py → setup_ctk() → MainWindow
 - `pytest 9.0.2 Win32 capture bug` — 测试必须加 `-s`
 - GBK 编码 — Windows 终端默认 GBK，Unicode 字符会报错；用 `PYTHONIOENCODING=utf-8` 或 `sys.stdout.reconfigure(encoding="utf-8")` 解决
 - Cross-Encoder 首次使用自动下载 ~84MB
+- **首次语义搜索耗时 ~90 秒** — `query.py` 默认语义模式会启动后台 HTTP 服务
+  （`semantic_service.py`）并加载 ~530MB 模型（Bi-Encoder ~450MB + Cross-Encoder ~84MB）。
+  后续搜索复用该服务仅需 ~5s。可用 `--mode text` 实现即时（~10ms）关键词搜索，或 `--local`
+  在当前进程加载模型（无后台服务，首次同样 ~90 秒）
