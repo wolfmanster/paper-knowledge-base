@@ -19,11 +19,10 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from loguru import logger as _loguru
-
 from app import OUTPUT_DIR
 from app import _clean_orphaned_images as _clean_images
 from app import _find_output_md as _find_md
+from loguru import logger as _loguru
 
 _logger = logging.getLogger(__name__)
 
@@ -32,9 +31,6 @@ _PROGRESS_REGEX = re.compile(r"page\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
 # A log callback accepts a single string line.
 LogCallback = Callable[[str], None]
-
-
-
 
 
 def parse_log_for_progress(msg: str) -> tuple[int, int] | None:

@@ -11,92 +11,32 @@
 """
 
 import json
-import math
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-# Windows GBK/CP936 兼容：调整现有流，不替换宿主进程的 stdout。
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, OSError):
-        pass
+from utils import (
+    COLLECTION_NAME,
+    CHROMA_DIR,
+    SCRIPTS_DIR,
+    ensure_utf8_stdout,
+    get_or_create_chroma_collection,
+    get_version,
+    load_bi_encoder,
+    load_cross_encoder,
+    sigmoid,
+)
 
-if TYPE_CHECKING:
-    from sentence_transformers import CrossEncoder, SentenceTransformer
-
-BASE_DIR = Path(__file__).resolve().parent.parent
+ensure_utf8_stdout()
 
 # 确保能找到 scripts/ 下的模块
-SCRIPTS_DIR = BASE_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
-
-CHROMA_DIR = BASE_DIR / "kb" / "chroma"
-COLLECTION_NAME = "papers"
-
-
-def _preferred_model_device() -> str:
-    """优先使用可用的 GPU，未检测到 GPU 时回退到 CPU。"""
-    import torch
-
-    if torch.cuda.is_available():
-        return "cuda"
-
-    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
-    if mps_backend is not None and mps_backend.is_available():
-        return "mps"
-
-    return "cpu"
-
-
-def _load_bi_encoder() -> "SentenceTransformer":
-    """加载 Bi-Encoder，失败时打印错误并退出。"""
-    model_path = (
-        Path.home()
-        / ".cache"
-        / "huggingface"
-        / "hub"
-        / "models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2"
-        / "snapshots"
-        / "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
-    )
-    try:
-        from sentence_transformers import SentenceTransformer
-
-        device = _preferred_model_device()
-        if model_path.exists():
-            return SentenceTransformer(str(model_path), device=device)
-        return SentenceTransformer(
-            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-            device=device,
-        )
-    except Exception as e:
-        _fail(f"Bi-Encoder 加载失败: {e}")
-
-
-def _load_cross_encoder():
-    """加载 Cross-Encoder，失败返回 None（降级为 Bi-Encoder 模式）。"""
-    try:
-        from sentence_transformers import CrossEncoder
-
-        return CrossEncoder(
-            "cross-encoder/ms-marco-MiniLM-L-6-v2",
-            device=_preferred_model_device(),
-        )
-    except Exception as e:
-        sys.stderr.write(f"[WARN] Cross-Encoder 加载失败（仅使用 Bi-Encoder）: {e}\n")
-        return None
 
 
 def _get_collection():
     """连接 ChromaDB 并获取论文集合，失败时打印错误并退出。"""
     try:
-        import chromadb
-
-        client = chromadb.PersistentClient(str(CHROMA_DIR))
-        return client.get_collection(COLLECTION_NAME)
+        return get_or_create_chroma_collection()
     except ValueError:
         _fail("Chroma 集合不存在。请运行: python scripts/ingest.py")
     except Exception as e:
@@ -106,14 +46,6 @@ def _get_collection():
 def _fail(msg: str):
     print(json.dumps({"error": msg}, ensure_ascii=False))
     sys.exit(1)
-
-
-def _sigmoid(x: float) -> float:
-    """将 unbounded logit 映射到 [0, 1] 区间。"""
-    try:
-        return 1.0 / (1.0 + math.exp(-x))
-    except OverflowError:
-        return 1.0 if x > 0 else 0.0
 
 
 def get_paper_chunks(
@@ -201,7 +133,7 @@ def search_with_components(
     # Cross-Encoder 重排
     if cross_encoder is not None:
         pairs = [[query, doc] for doc in documents]
-        scores = [_sigmoid(float(s)) for s in cross_encoder.predict(pairs)]
+        scores = [sigmoid(float(s)) for s in cross_encoder.predict(pairs)]
         ranked = sorted(
             zip(scores, ids, documents, metadatas), key=lambda x: x[0], reverse=True
         )[:top_k]
@@ -234,8 +166,8 @@ def search(query: str, top_k: int = 5) -> list:
     return search_with_components(
         query=query,
         top_k=top_k,
-        bi_encoder=_load_bi_encoder(),
-        cross_encoder=_load_cross_encoder(),
+        bi_encoder=load_bi_encoder(),
+        cross_encoder=load_cross_encoder(),
         collection=_get_collection(),
     )
 
@@ -259,21 +191,9 @@ if __name__ == "__main__":
     #   python query.py -g "filename.pdf"                       同上（简写）
     #   python query.py --version                               显示版本号
 
-    # --version 快速退出（不延迟导入）：从 git describe 获取版本
+    # --version 快速退出（不延迟导入）
     if "--version" in sys.argv[1:]:
-        import subprocess
-
-        try:
-            result = subprocess.run(
-                ["git", "describe", "--tags", "--always", "--dirty"],
-                capture_output=True, text=True,
-                cwd=BASE_DIR.parent,
-                timeout=2,
-            )
-            ver = result.stdout.strip() if result.returncode == 0 else "unknown"
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            ver = "unknown"
-        print(f"paper-knowledge-base {ver}")
+        print(f"paper-knowledge-base {get_version(SCRIPTS_DIR.parent)}")
         sys.exit(0)
 
     search_mode = "semantic"

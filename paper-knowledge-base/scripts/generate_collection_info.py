@@ -13,13 +13,15 @@
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-CHROMA_DIR = BASE_DIR / "kb" / "chroma"
-COLLECTION_NAME = "papers"
-COLLECTION_INFO_FILE = BASE_DIR / "kb" / "collection_info.json"
+from utils import (
+    CHROMA_DIR,
+    COLLECTION_NAME,
+    has_chinese,
+)
+
+COLLECTION_INFO_FILE = CHROMA_DIR.parent / "collection_info.json"
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +102,7 @@ def generate_collection_info() -> dict[str, Any]:
     keywords = _extract_keywords(titles)
 
     # 检测是否有中文内容
-    import re
-    has_cn = any(
-        re.search(r"[一-鿿]", t) for t in titles if t
-    )
+    has_cn = any(has_chinese(t) for t in titles if t)
     lang = "zh" if has_cn else "en"
 
     return {
