@@ -19,10 +19,11 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
+from loguru import logger as _loguru
+
 from app import OUTPUT_DIR
 from app import _clean_orphaned_images as _clean_images
 from app import _find_output_md as _find_md
-from loguru import logger as _loguru
 
 _logger = logging.getLogger(__name__)
 
