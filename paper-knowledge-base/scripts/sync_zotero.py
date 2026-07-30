@@ -4,6 +4,13 @@ Zotero → 论文知识库 同步脚本
 从 Zotero 的本地 SQLite 数据库中读取论文元数据和 PDF 附件，
 通过 MinerU 提取文本，分块嵌入后写入 ChromaDB。
 
+本模块是同步主入口与门面（facade）：常量、日志、检查点、主流程留在此处，
+其余职责拆分到同级子模块：
+  - sync_process_lock.py   跨平台进程锁
+  - zotero_reader.py       Zotero SQLite 查询
+  - mineru_runner.py       MinerU subprocess 提取与进程管理
+  - chroma_writer.py       ChromaDB 写入、去重、删除同步
+
 用法:
   python scripts/sync_zotero.py                   # 全量/增量同步
   python scripts/sync_zotero.py --dry-run         # 试运行
@@ -12,21 +19,15 @@ Zotero → 论文知识库 同步脚本
 
 from __future__ import annotations
 
-import atexit
-import errno
 import hashlib
 import json
 import logging
 import os
-import signal
-import sqlite3
-import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import BinaryIO
 
-# ── 路径 ─────────────────────────────────────────────────────
+# ── 路径与常量 ───────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -34,99 +35,46 @@ CHROMA_DIR = REPO_ROOT / "kb" / "chroma"
 CHECKPOINT_FILE = REPO_ROOT / "kb" / "zotero_checkpoint.json"
 LOG_FILE = REPO_ROOT / "kb" / "sync_zotero.log"
 SYNC_LOCK_FILE = REPO_ROOT / "kb" / "sync_zotero.lock"
-COLLECTION_NAME = "papers"
-DEFAULT_MINERU_TIMEOUT_SECONDS = 24 * 60 * 60
-
-# Zotero 默认路径
 DEFAULT_ZOTERO_DIR = Path.home() / "Zotero"
-# MinerU 路径：通过环境变量 MINERU_DIR 或 CLI 参数 --mineru-dir 指定
-# 模块加载时为 None，在 main() 执行时解析路径
-# 默认回退：尝试 ../MinerU-GUI（monorepo 兄弟目录）
-MINERU_DIR: Path | None = None
-MINERU_PYTHON: Path | None = None
-MINERU_SCRIPT = SCRIPTS_DIR / "mineru_extract.py"
 _DEFAULT_MINERU_DIR = (SCRIPTS_DIR.parent.parent / "MinerU-GUI").resolve()
 
-# 在模块层级维护 Zotero 连接引用，供 atexit 清理
-_ZOTERO_CONN: sqlite3.Connection | None = None
+# ── 子模块符号 re-export ─────────────────────────────────────
+# 必须在 _main_unlocked 之前 import，使 sync_zotero.<name> 可被测试
+# 通过 monkeypatch.setattr(sync_zotero, "<name>", ...) 替换；
+# _main_unlocked 内部以裸名字调用这些符号，会查 sync_zotero 模块 globals，
+# 因此 monkeypatch 能生效。
+from sync_process_lock import SyncProcessLock  # noqa: E402
+from zotero_reader import (  # noqa: E402
+    get_zotero_db_connection,
+    get_paper_items,
+    get_attachment_info,
+    lookup_collections,
+    format_authors,
+    check_zotero_version,
+)
+from mineru_runner import (  # noqa: E402
+    resolve_mineru_python,
+    resolve_attachment_path,
+    run_captured_process,
+    extract_with_mineru,
+    MINERU_DIR,
+    MINERU_PYTHON,
+    MINERU_SCRIPT,
+    DEFAULT_MINERU_TIMEOUT_SECONDS,
+)
+from chroma_writer import (  # noqa: E402
+    load_bi_encoder,
+    get_or_create_collection,
+    deduplicate_paper,
+    _normalize_title,
+    _get_existing_zotero_item_id,
+    is_duplicate_zotero_item,
+    replace_paper_chunks,
+    cleanup_deleted_items,
+    COLLECTION_NAME,
+)
 
-
-class SyncProcessLock:
-    """Cross-platform advisory lock that serializes all sync processes."""
-
-    def __init__(self, path: Path):
-        self.path = path
-        self._handle: BinaryIO | None = None
-
-    @staticmethod
-    def _try_lock(handle: BinaryIO) -> None:
-        handle.seek(0)
-        if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-    @staticmethod
-    def _unlock(handle: BinaryIO) -> None:
-        handle.seek(0)
-        if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-    def acquire(self, *, blocking: bool = True, poll_seconds: float = 1.0) -> bool:
-        if self._handle is not None:
-            return True
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a+b", buffering=0)
-        if handle.seek(0, os.SEEK_END) == 0:
-            handle.write(b"\0")
-
-        waiting_logged = False
-        while True:
-            try:
-                self._try_lock(handle)
-                self._handle = handle
-                return True
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                    handle.close()
-                    raise
-                if not blocking:
-                    handle.close()
-                    return False
-                if not waiting_logged:
-                    logger.info("另一个 Zotero 同步正在运行，等待其完成...")
-                    waiting_logged = True
-                time.sleep(poll_seconds)
-
-    def release(self) -> None:
-        if self._handle is None:
-            return
-        handle = self._handle
-        self._handle = None
-        try:
-            self._unlock(handle)
-        finally:
-            handle.close()
-
-    def __enter__(self) -> SyncProcessLock:
-        self.acquire()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.release()
-
-# ── 日志 ─────────────────────────────────────────────────────
+# ── 日志（模块加载时配置，沿用当前 stdout）────────────────────
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 # 日志沿用当前 stdout；不要重新包装进程文件描述符，否则导入模块的宿主
@@ -149,266 +97,9 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Zotero 数据库连接与查询
-# ═══════════════════════════════════════════════════════════════
-
-def get_zotero_db_connection(zotero_dir: Path) -> sqlite3.Connection:
-    """连接到 Zotero 的 zotero.sqlite 数据库（只读）。"""
-    db_path = zotero_dir / "zotero.sqlite"
-    if not db_path.exists():
-        logger.error("Zotero 数据库不存在: %s", db_path)
-        logger.error("请确认 Zotero 数据目录，用 --zotero-dir 指定")
-        sys.exit(1)
-
-    try:
-        # 使用 URI 模式以只读方式打开，防止 WAL checkpoint 污染 Zotero 数据库
-        db_uri = f"file:{db_path.resolve()}?mode=ro"
-        conn = sqlite3.connect(db_uri, uri=True, timeout=5)
-        # 处理 UTF-8 中文（Zotero 7 的 itemDataValues.value 是 blob）
-        conn.text_factory = lambda x: str(x, "utf-8", errors="replace")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.row_factory = sqlite3.Row
-        # 注册 atexit 清理，确保意外退出也关闭连接（幂等：close 可多次调用）
-        global _ZOTERO_CONN
-        _ZOTERO_CONN = conn
-        atexit.register(lambda c=conn: c.close() if c else None)
-        return conn
-    except sqlite3.DatabaseError as e:
-        logger.error("Zotero 数据库无法打开: %s", e)
-        logger.error("请关闭 Zotero 后重试")
-        sys.exit(1)
-
-
-def get_paper_items(
-    cursor,
-    since_item_id: int = 0,
-    since_version: int = 0,
-    pending_item_ids: list[int] | None = None,
-) -> list[dict]:
-    """获取 Zotero 中所有可检索的论文项及其元数据。
-
-    可检索类型: journalArticle, conferencePaper, thesis, preprint, computerProgram
-    排除: 已被删除的项
-
-    Args:
-        since_item_id: 仅返回 itemID > 此值的项（增量同步）
-        since_version: 仅返回 version > 此值的项（增量同步）
-        pending_item_ids: 无论版本如何都重新返回的失败项目 ID
-
-    Returns:
-        论文项字典列表，每项包含 title, abstractNote, doi, 等
-    """
-    pending_ids = sorted({int(item_id) for item_id in (pending_item_ids or [])})
-    pending_clause = ""
-    params: list[int] = [since_item_id, since_version]
-    if pending_ids:
-        placeholders = ",".join("?" for _ in pending_ids)
-        pending_clause = f" OR i.itemID IN ({placeholders})"
-        params.extend(pending_ids)
-
-    rows = cursor.execute(
-        f"""
-        SELECT i.itemID, i.key, i.dateAdded, i.dateModified, i.version,
-               t.typeName,
-               (SELECT v.value FROM itemData d JOIN itemDataValues v
-                  ON d.valueID = v.valueID
-                WHERE d.itemID = i.itemID AND d.fieldID = 1
-                LIMIT 1) AS title,
-               (SELECT v.value FROM itemData d JOIN itemDataValues v
-                  ON d.valueID = v.valueID
-                WHERE d.itemID = i.itemID AND d.fieldID = 2
-                LIMIT 1) AS abstractNote,
-               (SELECT v.value FROM itemData d JOIN itemDataValues v
-                  ON d.valueID = v.valueID
-                WHERE d.itemID = i.itemID AND d.fieldID = 59
-                LIMIT 1) AS doi,
-               (SELECT v.value FROM itemData d JOIN itemDataValues v
-                  ON d.valueID = v.valueID
-                WHERE d.itemID = i.itemID AND d.fieldID = 38
-                LIMIT 1) AS publicationTitle,
-               (SELECT v.value FROM itemData d JOIN itemDataValues v
-                  ON d.valueID = v.valueID
-                WHERE d.itemID = i.itemID AND d.fieldID = 6
-                LIMIT 1) AS date,
-               (SELECT v.value FROM itemData d JOIN itemDataValues v
-                  ON d.valueID = v.valueID
-                WHERE d.itemID = i.itemID AND d.fieldID = 13
-                LIMIT 1) AS url
-        FROM items i
-        JOIN itemTypes t ON i.itemTypeID = t.itemTypeID
-        WHERE t.typeName IN ('journalArticle','conferencePaper','thesis','preprint','computerProgram')
-          AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-          AND (i.itemID > ? OR i.version > ?{pending_clause})
-        ORDER BY i.itemID
-        """,
-        params,
-    ).fetchall()
-
-    items = []
-    for r in rows:
-        item = {
-            "item_id": r["itemID"],
-            "key": r["key"],
-            "type": r["typeName"],
-            "title": r["title"] or "",
-            "abstract_note": r["abstractNote"] or "",
-            "doi": r["doi"] or "",
-            "journal": r["publicationTitle"] or "",
-            "date": r["date"] or "",
-            "version": r["version"],
-        }
-        items.append(item)
-
-    return items
-
-
-def get_attachment_info(cursor, parent_item_id: int) -> dict | None:
-    """获取论文的附件信息。
-
-    优先返回 PDF 附件；如无 PDF，则查找 .docx 附件。
-
-    Args:
-        parent_item_id: 父论文项 ID
-
-    Returns:
-        {"key": items.key, "content_type": "application/pdf"|"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
-        如果没有附件则返回 None
-    """
-    row = cursor.execute(
-        """
-        SELECT i.key, ia.contentType
-        FROM itemAttachments ia
-        JOIN items i ON ia.itemID = i.itemID
-        WHERE ia.parentItemID = ?
-          AND ia.linkMode = 0
-          AND ia.contentType IN ('application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-        ORDER BY CASE ia.contentType
-          WHEN 'application/pdf' THEN 1
-          ELSE 2
-        END
-        LIMIT 1
-        """,
-        (parent_item_id,),
-    ).fetchone()
-
-    if row:
-        return {"key": row["key"], "content_type": row["contentType"]}
-    return None
-
-
-def lookup_collections(cursor, item_id: int,
-                       collection_map: dict[int, dict] | None = None) -> list[str]:
-    """查找论文所属的 Zotero 集合路径列表。
-
-    使用内存中的 collection_map 避免 N+1 SQL 查询。如果未提供 map，回退到逐条查询。
-
-    例如 item 同时在 "LC" 和 "CTP" 下，返回 ["LC", "CTP"]。
-    对于嵌套集合如 LC/仿生，返回完整路径 ["LC", "LC/仿生"]。
-
-    Args:
-        cursor: 数据库游标
-        item_id: 论文项 ID
-        collection_map: 预加载的 {collectionID: {"name": str, "parent": int|None}} 映射
-
-    Returns:
-        集合路径列表（扁平字符串）
-    """
-    rows = cursor.execute(
-        """
-        SELECT cl.collectionID
-        FROM collectionItems ci
-        JOIN collections cl ON ci.collectionID = cl.collectionID
-        WHERE ci.itemID = ?
-        ORDER BY cl.collectionName
-        """,
-        (item_id,),
-    ).fetchall()
-
-    def _resolve_path(cid: int) -> list[str]:
-        """使用内存 map 递归构建集合路径。"""
-        if collection_map and cid in collection_map:
-            parts = [collection_map[cid]["name"]]
-            pid = collection_map[cid]["parent"]
-            while pid:
-                if pid in collection_map:
-                    parts.insert(0, collection_map[pid]["name"])
-                    pid = collection_map[pid]["parent"]
-                else:
-                    break
-            return parts
-        # 回退到 SQL 查询
-        parts = []
-        current_id = cid
-        while current_id:
-            row = cursor.execute(
-                "SELECT collectionName, parentCollectionID FROM collections WHERE collectionID = ?",
-                (current_id,),
-            ).fetchone()
-            if row:
-                parts.insert(0, row["collectionName"])
-                current_id = row["parentCollectionID"]
-            else:
-                break
-        return parts
-
-    paths = []
-    for r in rows:
-        full = "/".join(_resolve_path(r["collectionID"]))
-        if full:
-            paths.append(full)
-
-    return paths
-
-
-def format_authors(cursor, item_id: int, max_authors: int = 3) -> str:
-    """格式化论文的作者列表。
-
-    Args:
-        item_id: 论文项 ID
-        max_authors: 最多列出几位作者
-
-    Returns:
-        格式如 "Jin, Leilei; Xi, Huan" 或 "Jin, Leilei et al."
-    """
-    rows = cursor.execute(
-        """
-        SELECT c.lastName, c.firstName
-        FROM itemCreators ic
-        JOIN creators c ON ic.creatorID = c.creatorID
-        WHERE ic.itemID = ? AND ic.creatorTypeID = 1  -- 1 = author
-        ORDER BY ic.orderIndex
-        """,
-        (item_id,),
-    ).fetchall()
-
-    if not rows:
-        return ""
-
-    authors = []
-    for r in rows:
-        last = (r["lastName"] or "").strip()
-        first = (r["firstName"] or "").strip()
-        if last and first:
-            authors.append(f"{last}, {first}")
-        elif last:
-            authors.append(last)
-        else:
-            authors.append(first)
-
-    if len(authors) <= max_authors:
-        return "; ".join(authors)
-    else:
-        return "; ".join(authors[:max_authors]) + " et al."
-
-
-def check_zotero_version(cursor) -> int:
-    """获取 Zotero 当前版本号（用于增量同步检测）。"""
-    row = cursor.execute("SELECT MAX(version) FROM items").fetchone()
-    return row[0] or 0
-
-
-# ═══════════════════════════════════════════════════════════════
 #  检查点管理
+#  留在主模块：CHECKPOINT_FILE 被 monkeypatch.setattr(sync_zotero, ...)
+#  替换时，save/load_checkpoint 必须读取 sync_zotero.CHECKPOINT_FILE。
 # ═══════════════════════════════════════════════════════════════
 
 def load_checkpoint() -> dict:
@@ -455,492 +146,13 @@ def compute_next_last_item_id(previous_item_id: int, items: list[dict]) -> int:
     )
 
 
-def resolve_mineru_python(mineru_dir: Path) -> Path:
-    """Locate the MinerU virtualenv interpreter on Windows or POSIX systems."""
-    candidates = (
-        mineru_dir / ".venv" / "Scripts" / "python.exe",
-        mineru_dir / ".venv" / "bin" / "python",
-        mineru_dir / ".venv" / "bin" / "python3",
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return candidates[0] if os.name == "nt" else candidates[1]
-
-
-# ═══════════════════════════════════════════════════════════════
-#  文档提取（MinerU subprocess，支持 PDF/Word/图片）
-# ═══════════════════════════════════════════════════════════════
-
-def resolve_attachment_path(
-    zotero_storage: Path,
-    attachment_key: str,
-    content_type: str,
-    max_size_mb: int = 500,
-) -> Path | None:
-    """在 Zotero storage/ 目录中查找附件文件。
-
-    根据 content_type 查找对应后缀的文件（.pdf 或 .docx）。
-    跳过超过 max_size_mb 的超大文件。
-
-    Args:
-        zotero_storage: 指向 Zotero 的 storage/ 目录
-        attachment_key: 附件项的 items.key
-        content_type: MIME 类型（决定要查找的文件后缀）
-        max_size_mb: 文件大小上限（MB），超过返回 None
-
-    Returns:
-        第一个找到的匹配文件路径，未找到返回 None
-    """
-    storage_dir = zotero_storage / attachment_key
-    if not storage_dir.is_dir():
-        logger.debug("  storage 目录不存在: %s", storage_dir)
-        return None
-
-    if content_type == "application/pdf":
-        ext_pattern = "*.pdf"
-        type_label = "PDF"
-    elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        ext_pattern = "*.docx"
-        type_label = "Word"
-    else:
-        logger.debug("  不支持的附件类型: %s", content_type)
-        return None
-
-    files = sorted(storage_dir.glob(ext_pattern))
-    if not files:
-        logger.debug("  目录中无 %s 文件: %s", type_label, storage_dir)
-        return None
-
-    file_path = files[0]
-    if len(files) > 1:
-        logger.debug("  storage 目录中有多个 %s，取第一个: %s", type_label, file_path.name)
-
-    # 超大文件检查
-    max_bytes = max_size_mb * 1024 * 1024
-    try:
-        if file_path.stat().st_size > max_bytes:
-            logger.warning("  %s 文件过大 (>%dMB)，跳过: %s (%.1fMB)",
-                           type_label, max_size_mb, file_path.name, file_path.stat().st_size / (1024*1024))
-            return None
-    except OSError as e:
-        logger.warning("  无法读取文件大小: %s — %s", file_path.name, e)
-        return None
-
-    return file_path
-
-
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    """Forcefully terminate a MinerU process and all descendants."""
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-        )
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    if process.poll() is None:
-        process.kill()
-
-
-def run_captured_process(
-    command: list[str],
-    *,
-    timeout_seconds: float,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Run a captured subprocess with a timeout that also kills descendants."""
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be greater than zero")
-
-    process_kwargs: dict = {}
-    if os.name == "nt":
-        process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        process_kwargs["start_new_session"] = True
-
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        **process_kwargs,
-    )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        _terminate_process_tree(process)
-        process.communicate()
-        raise
-    return subprocess.CompletedProcess(
-        command,
-        process.returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-
-def extract_with_mineru(
-    file_path: Path,
-    output_dir: Path,
-    *,
-    lang: str = "en",
-    max_pages: int = 0,
-    timeout_seconds: float = DEFAULT_MINERU_TIMEOUT_SECONDS,
-) -> dict | None:
-    """通过 MinerU subprocess 提取文档文本。
-
-    支持 PDF 和 Word (.docx) 文件，调用 mineru_extract.py（在 MinerU venv 中运行），
-    读取 stdout 中的 JSON 结果。
-
-    Args:
-        file_path: 文件路径（.pdf 或 .docx）
-        output_dir: MinerU 输出目录
-        lang: OCR 语言（默认 en）
-        max_pages: 最多处理页数；0 表示全部页面（Word 文件忽略此参数）
-        timeout_seconds: 单篇 MinerU 最长运行秒数（默认 24 小时）
-
-    Returns:
-        {"text": "pure text", "markdown": "raw md"}，失败返回 None
-    """
-    if MINERU_PYTHON is None:
-        logger.error("  MinerU 路径未配置，跳过文档提取")
-        logger.error("  请通过 --mineru-dir 参数或 MINERU_DIR 环境变量指定 MinerU GUI 目录")
-        return None
-
-    if not MINERU_PYTHON.exists():
-        logger.error("  MinerU Python 不存在: %s", MINERU_PYTHON)
-        logger.error("  请确认 MinerU GUI 路径")
-        return None
-
-    if not MINERU_SCRIPT.exists():
-        logger.error("  mineru_extract.py 不存在: %s", MINERU_SCRIPT)
-        return None
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        # 设置 MINERU_GUI_DIR 环境变量，让 mineru_extract.py 能找到 mineru_api
-        env = os.environ.copy()
-        env["MINERU_GUI_DIR"] = str(MINERU_DIR)
-
-        proc = run_captured_process(
-            [
-                str(MINERU_PYTHON),
-                str(MINERU_SCRIPT),
-                str(file_path),
-                str(output_dir),
-                "--lang", lang,
-                "--max_pages", str(max_pages),
-            ],
-            timeout_seconds=timeout_seconds,
-            env=env,
-        )
-
-        # 解析输出 JSON
-        if proc.returncode != 0:
-            logger.warning("  MinerU 进程返回错误码 %d", proc.returncode)
-            logger.debug("  stderr: %s", proc.stderr[:500])
-            return None
-
-        result = json.loads(proc.stdout.strip())
-        if result.get("status") == "ok":
-            return result
-        else:
-            logger.warning("  MinerU 提取失败: %s", result.get("message", "未知错误"))
-            return None
-
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            "  MinerU 超过 %.1f 小时，已终止进程树并保留到重试队列: %s",
-            timeout_seconds / 3600,
-            file_path.name,
-        )
-        return None
-    except json.JSONDecodeError as e:
-        logger.warning("  MinerU 输出解析失败: %s", e)
-        logger.debug("  原始输出: %s", proc.stdout[:300] if proc else "N/A")
-        return None
-    except Exception as e:
-        logger.warning("  MinerU 调用失败: %s", e)
-        return None
-
-
-# ═══════════════════════════════════════════════════════════════
-#  导入模型与 ChromaDB
-# ═══════════════════════════════════════════════════════════════
-
-def load_bi_encoder():
-    """加载 SentenceTransformer Bi-Encoder 模型。"""
-    from sentence_transformers import SentenceTransformer
-
-    model_path = (
-        Path.home()
-        / ".cache"
-        / "huggingface"
-        / "hub"
-        / "models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2"
-        / "snapshots"
-        / "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
-    )
-
-    try:
-        if model_path.exists():
-            logger.info("从本地缓存加载 Bi-Encoder")
-            return SentenceTransformer(str(model_path))
-        logger.info("从 HuggingFace 下载 Bi-Encoder")
-        return SentenceTransformer(
-            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-        )
-    except Exception as e:
-        logger.error("Bi-Encoder 加载失败: %s", e)
-        sys.exit(1)
-
-
-def get_or_create_collection(client):
-    """获取或创建 ChromaDB 的 papers 集合。"""
-    import chromadb
-    try:
-        return client.get_collection(COLLECTION_NAME)
-    except (ValueError, chromadb.errors.NotFoundError):
-        return client.create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-
-
-def deduplicate_paper(doi: str, title: str, collection) -> str | None:
-    """检查论文是否已在 ChromaDB 中。
-
-    两层去重策略:
-    1. DOI 精确匹配（优先）
-    2. 规范化标题精确匹配（回退）
-
-    Args:
-        doi: DOI 字符串（可能为空）
-        title: 论文标题
-        collection: ChromaDB collection
-
-    Returns:
-        已有的 paper_id（匹配到重复），None（新论文）
-    """
-    # 第一层：DOI 精确匹配
-    if doi:
-        norm_doi = doi.strip().lower().rstrip(".")
-        try:
-            result = collection.get(
-                include=["metadatas"],
-                where={"doi": norm_doi},
-                limit=1,
-            )
-            if result["ids"]:
-                matched_id = result["metadatas"][0].get("paper_id", "")
-                logger.debug("  DOI 匹配成功: %s -> %s", norm_doi, matched_id)
-                return matched_id
-        except Exception as e:
-            logger.debug("  DOI 查询异常: %s", e)
-
-    # 第二层：规范化标题精确匹配。Chroma metadata 的 $contains 对字符串
-    # 不是子串查询，因此分页读取元数据后在 Python 中比较。
-    if title:
-        title_norm = _normalize_title(title)
-        offset = 0
-        batch_size = 1000
-        try:
-            while True:
-                result = collection.get(
-                    include=["metadatas"],
-                    limit=batch_size,
-                    offset=offset,
-                )
-                ids = result.get("ids") or []
-                metadatas = result.get("metadatas") or []
-                for doc_id, metadata in zip(ids, metadatas):
-                    if metadata and _normalize_title(metadata.get("title", "")) == title_norm:
-                        matched_id = metadata.get("paper_id", doc_id.split("#")[0])
-                        logger.debug("  标题匹配成功: '%s' -> %s", title_norm, matched_id)
-                        return matched_id
-                if len(ids) < batch_size:
-                    break
-                offset += len(ids)
-        except Exception as e:
-            logger.debug("  标题查询异常: %s", e)
-
-    return None
-
-
-def _normalize_title(title: str) -> str:
-    """Normalize a title for conservative duplicate detection."""
-    import re
-
-    return " ".join(re.sub(r"[^\w\s]", " ", title, flags=re.UNICODE).casefold().split())
-
-
-def _get_existing_zotero_item_id(collection, paper_id: str) -> int | None:
-    """Return the Zotero item id stored for an existing paper, if any."""
-    try:
-        result = collection.get(
-            include=["metadatas"],
-            where={"paper_id": paper_id},
-            limit=1,
-        )
-        metadatas = result.get("metadatas") or []
-        if metadatas:
-            item_id = metadatas[0].get("zotero_item_id")
-            return int(item_id) if item_id is not None else None
-    except (TypeError, ValueError) as e:
-        logger.debug("  已有 Zotero itemID 无效: %s", e)
-    except Exception as e:
-        logger.debug("  查询已有 Zotero itemID 失败: %s", e)
-    return None
-
-
-def is_duplicate_zotero_item(
-    existing_zotero_item_id: int | None,
-    zotero_item_id: int,
-) -> bool:
-    """Whether a matched paper belongs to a different Zotero item.
-
-    A full rescan refreshes the source item already represented in the vector
-    store, but must not make a second Zotero entry for the same paper eligible
-    for extraction and indexing.
-    """
-    return existing_zotero_item_id != zotero_item_id
-
-
-def replace_paper_chunks(
-    collection,
-    *,
-    paper_id: str,
-    ids: list[str],
-    embeddings,
-    documents: list[str],
-    metadatas: list[dict],
-    batch_size: int = 50,
-) -> None:
-    """Replace one paper while restoring its previous chunks on failure."""
-    old = collection.get(
-        include=["documents", "metadatas", "embeddings"],
-        where={"paper_id": paper_id},
-    )
-    old_ids = old.get("ids") or []
-    old_documents = old.get("documents") or []
-    old_metadatas = old.get("metadatas") or []
-    old_embeddings = old.get("embeddings")
-    if hasattr(old_embeddings, "tolist"):
-        old_embeddings = old_embeddings.tolist()
-    old_embeddings = old_embeddings or []
-
-    inserted_ids: list[str] = []
-    try:
-        if old_ids:
-            collection.delete(ids=old_ids)
-
-        for start in range(0, len(ids), batch_size):
-            end = start + batch_size
-            batch_embeddings = embeddings[start:end]
-            if hasattr(batch_embeddings, "tolist"):
-                batch_embeddings = batch_embeddings.tolist()
-            collection.add(
-                ids=ids[start:end],
-                embeddings=batch_embeddings,
-                documents=documents[start:end],
-                metadatas=metadatas[start:end],
-            )
-            inserted_ids.extend(ids[start:end])
-    except Exception:
-        if inserted_ids:
-            try:
-                collection.delete(ids=inserted_ids)
-            except Exception as cleanup_error:
-                logger.error("  清理失败的新 chunks 时出错: %s", cleanup_error)
-
-        if old_ids:
-            try:
-                for start in range(0, len(old_ids), batch_size):
-                    end = start + batch_size
-                    collection.add(
-                        ids=old_ids[start:end],
-                        embeddings=old_embeddings[start:end],
-                        documents=old_documents[start:end],
-                        metadatas=old_metadatas[start:end],
-                    )
-                logger.info("  已恢复 %d 个旧 chunks", len(old_ids))
-            except Exception as restore_error:
-                logger.critical("  旧 chunks 恢复失败，需要人工修复: %s", restore_error)
-        raise
-    else:
-        from index_generation import mark_index_changed
-
-        mark_index_changed()
-
-
-# ═══════════════════════════════════════════════════════════════
-#  删除同步
-# ═══════════════════════════════════════════════════════════════
-
-def cleanup_deleted_items(cursor, collection, since_version: int = 0) -> int:
-    """清理 ChromaDB 中已在 Zotero 中被删除的论文。
-
-    Args:
-        since_version: 只检查此版本之后的删除操作
-
-    Returns:
-        清理的论文数量
-    """
-    deleted_ids = cursor.execute(
-        "SELECT itemID FROM deletedItems WHERE dateDeleted IS NOT NULL"
-    ).fetchall()
-
-    removed = 0
-    for row in deleted_ids:
-        item_id = row["itemID"]
-        # 在 ChromaDB 中查找匹配 zotero_item_id 的 chunks
-        result = collection.get(
-            include=[],
-            where={"zotero_item_id": item_id},
-        )
-        if result["ids"]:
-            try:
-                # 获取唯一的 paper_ids
-                meta_result = collection.get(
-                    include=["metadatas"],
-                    where={"zotero_item_id": item_id},
-                )
-                paper_ids = set()
-                for m in meta_result["metadatas"]:
-                    paper_ids.add(m.get("paper_id", ""))
-
-                # 删除所有匹配的 chunks
-                collection.delete(ids=result["ids"])
-                for pid in paper_ids:
-                    logger.info("  已删除 Zotero 中移除的论文: paper_id=%s", pid)
-                removed += len(paper_ids)
-            except Exception as e:
-                logger.warning("  删除失败 (itemID=%d): %s", item_id, e)
-
-    if removed:
-        from index_generation import mark_index_changed
-
-        mark_index_changed()
-    return removed
-
-
 # ═══════════════════════════════════════════════════════════════
 #  主流程
 # ═══════════════════════════════════════════════════════════════
 
 def _main_unlocked():
     import argparse
+    import mineru_runner
 
     # ── 参数解析 ──────────────────────────────────────────
     parser = argparse.ArgumentParser(
@@ -1006,9 +218,9 @@ def _main_unlocked():
             _DEFAULT_MINERU_DIR if _DEFAULT_MINERU_DIR.is_dir() else None
         )
 
-    global MINERU_DIR, MINERU_PYTHON
-    MINERU_DIR = _md
-    MINERU_PYTHON = resolve_mineru_python(_md) if _md else None
+    # MinerU 全局存放在 mineru_runner 模块；extract_with_mineru 读取它们。
+    mineru_runner.MINERU_DIR = _md
+    mineru_runner.MINERU_PYTHON = resolve_mineru_python(_md) if _md else None
     # MINERU_SCRIPT 不受此影响，始终在项目 scripts/ 下
 
     zotero_dir: Path = args.zotero_dir
@@ -1020,8 +232,8 @@ def _main_unlocked():
     logger.info("Zotero 同步开始")
     logger.info("  Zotero 目录: %s", zotero_dir)
     logger.info("  知识库根目录: %s", REPO_ROOT)
-    if MINERU_PYTHON:
-        logger.info("  MinerU: %s", MINERU_PYTHON)
+    if mineru_runner.MINERU_PYTHON:
+        logger.info("  MinerU: %s", mineru_runner.MINERU_PYTHON)
     else:
         logger.info("  MinerU: 未配置（PDF 提取将跳过）")
     logger.info("  Dry-run: %s", dry_run)
