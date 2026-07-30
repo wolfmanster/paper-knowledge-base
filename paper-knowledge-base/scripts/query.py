@@ -336,14 +336,25 @@ if __name__ == "__main__":
         try:
             from quick_search import search as text_search
         except ImportError as e:
-            _fail(f"无法加载 quick_search 模块: {e}")
+            _fail(
+                f"无法加载 quick_search 模块: {e}\n"
+                "提示: 请从 paper-knowledge-base/ 目录运行，"
+                "或使用根目录的 python pkb.py --mode text ..."
+            )
 
         results = text_search(query, top_k)
     else:
         # 语义搜索
         if local_semantic:
+            sys.stderr.write("正在本进程加载语义模型（~530MB，首次约 90 秒）...\n")
+            sys.stderr.flush()
             results = search(query, top_k)
         else:
+            sys.stderr.write(
+                "正在启动语义检索服务后台进程并加载模型"
+                "（~530MB，首次约 90 秒）...\n"
+            )
+            sys.stderr.flush()
             try:
                 results = search_via_service(query, top_k)
             except Exception as e:

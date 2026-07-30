@@ -31,8 +31,37 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 INDEX_DB = BASE_DIR / "kb" / "index.db"
 
 
-def _determine_match_type(query_lower: str, title: str, abstract: str, summary: str) -> str:
-    """判断查询命中了哪些字段。"""
+def _has_chinese(text: str) -> bool:
+    """检查文本是否包含中文字符（含 CJK 扩展 A 区）。"""
+    for ch in text:
+        if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿":
+            return True
+    return False
+
+
+def _determine_match_type(
+    query_lower: str,
+    title: str,
+    abstract: str,
+    summary: str,
+    use_word_boundary: bool = False,
+) -> str:
+    """判断查询命中了哪些字段。
+
+    Args:
+        use_word_boundary: 启用单词边界匹配，避免短查询误匹配子串。
+    """
+    if use_word_boundary:
+        pattern = re.compile(rf"\b{re.escape(query_lower)}\b")
+        matched = []
+        if pattern.search(title.lower()):
+            matched.append("title")
+        if pattern.search(abstract.lower()):
+            matched.append("abstract")
+        if pattern.search(summary.lower()):
+            matched.append("summary")
+        return "+".join(matched) if matched else "unknown"
+
     matched = []
     if query_lower in title.lower():
         matched.append("title")
@@ -169,6 +198,41 @@ def search(query: str, top_k: int = 10) -> list:
                 "score": round(float(r.get("base_score", 0)), 1),
             })
 
+        # ── 第三阶段：短英文查询的单词边界过滤 ──
+        # "PEC" 不应匹配 "especially"。对 <=4 字符的纯英文查询执行 \b 过滤。
+        if len(query) <= 4 and not _has_chinese(query) and query.isascii():
+            word_pattern = re.compile(rf"\b{re.escape(query)}\b", re.IGNORECASE)
+            exact_matches: list[dict] = []
+            substring_only: list[dict] = []
+
+            for r in output:
+                title_text = r.get("title", "")
+                abstract_text = r.get("abstract_preview", "").replace("**", "")
+                summary_text = r.get("summary", "")
+                if (
+                    word_pattern.search(title_text)
+                    or word_pattern.search(abstract_text)
+                    or word_pattern.search(summary_text)
+                ):
+                    exact_matches.append(r)
+                else:
+                    substring_only.append(r)
+
+            if exact_matches:
+                output = exact_matches + substring_only
+                if len(exact_matches) >= top_k:
+                    output = output[:top_k]
+
+            # 更新 match_type 为单词边界结果
+            for r in output:
+                r["match_type"] = _determine_match_type(
+                    query.lower(),
+                    r.get("title", ""),
+                    r.get("abstract_preview", "").replace("**", ""),
+                    r.get("summary", ""),
+                    use_word_boundary=True,
+                )
+
         return output
 
     finally:
@@ -176,6 +240,28 @@ def search(query: str, top_k: int = 10) -> list:
 
 
 if __name__ == "__main__":
+    # ── Schema introspection ──
+    if "--schema" in sys.argv or "--list-tables" in sys.argv:
+        if not INDEX_DB.exists():
+            print(json.dumps(
+                {"error": f"索引数据库不存在: {INDEX_DB}，请先运行 python scripts/build_index.py"},
+                ensure_ascii=False,
+                indent=2,
+            ))
+            sys.exit(1)
+        conn = sqlite3.connect(str(INDEX_DB))
+        tables: dict[str, dict[str, str | None]] = {}
+        for row in conn.execute(
+            "SELECT name, type, sql FROM sqlite_master ORDER BY name"
+        ).fetchall():
+            tables[row[0]] = {"type": row[1], "sql": row[2]}
+        conn.close()
+        print(json.dumps({
+            "database": str(INDEX_DB),
+            "tables": tables,
+        }, ensure_ascii=False, indent=2))
+        sys.exit(0)
+
     if len(sys.argv) < 2:
         print(json.dumps(
             {"error": "用法: python scripts/quick_search.py <关键字> [top_k]"},
