@@ -5,14 +5,14 @@ tkinter GUI 通过调用此模块的函数执行转换。
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
 from pathlib import Path
+
 
 # ── Version ──────────────────────────────────────────────────
 def _get_version() -> str:
     """Return the package version — from importlib.metadata (installed) or fallback."""
-    import importlib.metadata
-
     try:
         return importlib.metadata.version("mineru-gui")
     except importlib.metadata.PackageNotFoundError:
