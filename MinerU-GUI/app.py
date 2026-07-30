@@ -10,7 +10,7 @@ from pathlib import Path
 
 # ── Version ──────────────────────────────────────────────────
 try:
-    from _version import __version__  # noqa: F401 — re-exported for use by other modules
+    from _version import __version__
 except ImportError:
     __version__ = "0.0.0"  # fallback when _version.py not shipped (non-editable install)
 

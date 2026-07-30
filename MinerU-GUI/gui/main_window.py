@@ -10,7 +10,8 @@ from pathlib import Path
 import customtkinter as ctk
 import windnd  # type: ignore
 
-from app import OUTPUT_DIR, PROJECT_DIR, SUPPORTED_EXTENSIONS, __version__ as APP_VERSION
+from app import OUTPUT_DIR, PROJECT_DIR, SUPPORTED_EXTENSIONS
+from app import __version__ as APP_VERSION
 from gui.theme import (
     PALETTE,
     accent_button,
