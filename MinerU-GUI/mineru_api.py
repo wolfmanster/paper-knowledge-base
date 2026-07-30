@@ -45,11 +45,7 @@ def _get_version() -> str:
     try:
         return importlib.metadata.version("mineru-gui")
     except importlib.metadata.PackageNotFoundError:
-        try:
-            from _version import __version__  # type: ignore[import-untyped]
-            return __version__
-        except ImportError:
-            return "0.0.0"
+        return "0.0.0.dev0"
 
 __version__ = _get_version()
 """Package version (str) — readable after ``from mineru_api import __version__``."""

@@ -10,6 +10,9 @@ MinerU-GUI/.window_geometry.json
 kb/
 paper-knowledge-base/kb/
 
+# Build artifacts
+*.egg-info/
+
 # Python cache
 __pycache__/
 *.pyc

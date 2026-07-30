@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -28,12 +28,14 @@ dependencies = [
 mineru = ["mineru[core]>=3.0.0,<4.0.0"]
 dev = ["pytest", "black", "ruff"]
 
+## 发版时通过 git tag 设置版本号
+[tool.setuptools_scm]
+root = ".."
+fallback_version = "0.0.0.dev0"
+
 # app.py / mineru_api.py 是顶层单文件模块；gui/ 是包
 [tool.setuptools]
-py-modules = ["app", "mineru_api", "_version"]
+py-modules = ["app", "mineru_api"]
 
 [tool.setuptools.packages.find]
 include = ["gui*"]
-
-[tool.setuptools.dynamic]
-version = {attr = "_version.__version__"}

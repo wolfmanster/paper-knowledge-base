@@ -950,16 +950,21 @@ def _main_unlocked():
     parser.add_argument("--version", action="store_true",
                         help="显示版本号并退出")
 
-    # 快速路径：--version 不触发任何延迟导入
+    # 快速路径：--version 不触发任何延迟导入，从 git describe 获取版本
     known, _ = parser.parse_known_args()
     if known.version:
-        _version_file = REPO_ROOT.parent / "_version.py"
-        if _version_file.exists():
-            _ver: dict[str, str] = {}
-            exec(_version_file.read_text(encoding="utf-8"), _ver)
-            print(f"paper-knowledge-base {_ver.get('__version__', 'unknown')}")
-        else:
-            print("paper-knowledge-base unknown (no _version.py)")
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "describe", "--tags", "--always", "--dirty"],
+                capture_output=True, text=True,
+                cwd=REPO_ROOT.parent,
+                timeout=2,
+            )
+            ver = result.stdout.strip() if result.returncode == 0 else "unknown"
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            ver = "unknown"
+        print(f"paper-knowledge-base {ver}")
         sys.exit(0)
 
     # 延迟导入（知识库环境中的依赖）
