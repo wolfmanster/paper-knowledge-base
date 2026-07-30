@@ -9,19 +9,16 @@ import time
 
 from index_generation import mark_index_changed
 from tqdm import tqdm
-from utils import (
-    CHROMA_DIR,
-    CHUNK_MAX_WORDS,
-    SCRIPTS_DIR,
+from models import get_or_create_chroma_collection, load_bi_encoder
+from paths import CHROMA_DIR, CHUNK_MAX_WORDS, SCRIPTS_DIR
+from text_processing import (
     chunk_text,
     compute_paper_id,
     extract_text_from_pdf,
     extract_title_from_filename,
-    get_or_create_chroma_collection,
     is_supported_file,
-    load_bi_encoder,
-    setup_logging,
 )
+from utils import setup_logging
 
 # ── 路径（使用绝对路径）────────────────────────────────────────
 

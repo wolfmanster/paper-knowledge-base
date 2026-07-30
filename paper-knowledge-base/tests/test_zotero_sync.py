@@ -15,7 +15,7 @@ SCRIPTS_DIR = BASE_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from utils import (
+from text_processing import (
     compute_paper_id_from_doi,
     extract_text_from_markdown,
     extract_year_from_date,

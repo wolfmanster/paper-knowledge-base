@@ -15,16 +15,10 @@ import time
 from pathlib import Path
 
 from tqdm import tqdm
-from utils import (
-    COLLECTION_NAME,
-    INDEX_DB,
-    SCRIPTS_DIR,
-    ensure_utf8_stdout,
-    extract_abstract,
-    generate_summary,
-    get_or_create_chroma_collection,
-    setup_logging,
-)
+from abstract_extractor import extract_abstract, generate_summary
+from models import get_or_create_chroma_collection
+from paths import COLLECTION_NAME, INDEX_DB, SCRIPTS_DIR
+from utils import ensure_utf8_stdout, setup_logging
 
 ensure_utf8_stdout()
 

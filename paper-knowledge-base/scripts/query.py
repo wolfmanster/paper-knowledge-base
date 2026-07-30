@@ -14,15 +14,13 @@ import json
 import sys
 from pathlib import Path
 
-from utils import (
-    SCRIPTS_DIR,
-    ensure_utf8_stdout,
+from models import (
     get_or_create_chroma_collection,
-    get_version,
     load_bi_encoder,
     load_cross_encoder,
-    sigmoid,
 )
+from paths import SCRIPTS_DIR
+from utils import ensure_utf8_stdout, get_version, sigmoid
 
 ensure_utf8_stdout()
 
@@ -143,7 +141,7 @@ def search_with_components(
         ][:top_k]
 
     # 格式化输出
-    from utils import extract_title_from_filename
+    from text_processing import extract_title_from_filename
 
     output = []
     for score, doc_id, doc, meta in ranked:

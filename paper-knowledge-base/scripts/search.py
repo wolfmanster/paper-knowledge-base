@@ -13,14 +13,14 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
-from utils import (
-    BASE_DIR,
-    extract_title_from_filename,
+from models import (
     get_or_create_chroma_collection,
     load_bi_encoder,
     load_cross_encoder,
-    sigmoid,
 )
+from paths import BASE_DIR
+from text_processing import extract_title_from_filename
+from utils import sigmoid
 
 INITIAL_K = 20
 FINAL_K = 10

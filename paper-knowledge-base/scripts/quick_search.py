@@ -19,7 +19,8 @@ import re
 import sqlite3
 import sys
 
-from utils import INDEX_DB, ensure_utf8_stdout, has_chinese
+from paths import INDEX_DB
+from utils import ensure_utf8_stdout, has_chinese
 
 ensure_utf8_stdout()
 

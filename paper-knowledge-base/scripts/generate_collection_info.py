@@ -15,11 +15,8 @@ import json
 import logging
 from typing import Any
 
-from utils import (
-    CHROMA_DIR,
-    COLLECTION_NAME,
-    has_chinese,
-)
+from paths import CHROMA_DIR, COLLECTION_NAME
+from utils import has_chinese
 
 COLLECTION_INFO_FILE = CHROMA_DIR.parent / "collection_info.json"
 

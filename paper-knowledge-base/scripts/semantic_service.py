@@ -21,13 +21,13 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from index_generation import read_index_generation
-from utils import (
-    BASE_DIR,
-    ensure_utf8_stdout,
+from models import (
     get_or_create_chroma_collection,
     load_bi_encoder,
     load_cross_encoder,
 )
+from paths import BASE_DIR
+from utils import ensure_utf8_stdout
 
 HOST = os.environ.get("PKB_SEMANTIC_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PKB_SEMANTIC_PORT", "8765"))

@@ -8,7 +8,7 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from utils import (
+from abstract_extractor import (
     _clean_abstract,
     _normalize_spaced_letters,
     _split_letters_by_known_words,
