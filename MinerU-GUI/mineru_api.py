@@ -34,21 +34,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from gui._core import run_core
-
 # ── Version ─────────────────────────────────────────────
-
-def _get_version() -> str:
-    """Return the package version — from importlib.metadata (installed) or fallback."""
-    import importlib.metadata
-
-    try:
-        return importlib.metadata.version("mineru-gui")
-    except importlib.metadata.PackageNotFoundError:
-        return "0.0.0.dev0"
-
-__version__ = _get_version()
-"""Package version (str) — readable after ``from mineru_api import __version__``."""
+from gui._core import run_core
 
 
 @dataclass

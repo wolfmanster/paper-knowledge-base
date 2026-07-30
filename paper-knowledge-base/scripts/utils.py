@@ -6,11 +6,16 @@ PDF 提取、文本清洗、分块、元数据生成
 
 import hashlib
 import logging
+import math
 import re
+import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING
 
 import fitz  # PyMuPDF
+
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder, SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +29,7 @@ MAX_PAGES = 20
 MAX_TEXT_CHARS = 100_000
 
 
-def extract_text_from_pdf(pdf_path: Path) -> Optional[str]:
+def extract_text_from_pdf(pdf_path: Path) -> str | None:
     """用 PyMuPDF 提取 PDF 全文，返回纯文本，失败返回 None。
 
     - 跳过 >25MB 的超大文件（手册/书籍）
@@ -117,7 +122,7 @@ def chunk_text(
     text: str,
     title: str = "",
     max_words: int = CHUNK_MAX_WORDS,
-) -> List[dict]:
+) -> list[dict]:
     """将文本切分为适合嵌入的块。
 
     策略：段落级分割 → 词数分块（简单可靠，避免正则陷阱）。
@@ -180,7 +185,7 @@ _SECTION_NAMES = {
 _NUM_PREFIX = re.compile(r"^(\d+(?:\.\d+)*|[IVXLCDM]+|[A-Z])[\.\s]+(.+)$")
 
 
-def _detect_section_header(line: str) -> Optional[str]:
+def _detect_section_header(line: str) -> str | None:
     """检测一行是否是章节标题。是则返回规范化章节名，否则返回 None。"""
     stripped = line.lower().strip().rstrip(".: ")
     if stripped in _SECTION_NAMES:
@@ -516,3 +521,144 @@ def generate_summary(abstract: str, full_text: str = "") -> str:
             break
 
     return " ".join(summary_parts).strip()
+
+
+# ── 共享常量和函数 ─────────────────────────────────────────
+# 所有脚本从 utils.py 导入以下定义，避免重复
+
+SCRIPTS_DIR = Path(__file__).parent
+BASE_DIR = SCRIPTS_DIR.parent
+CHROMA_DIR = BASE_DIR / "kb" / "chroma"
+COLLECTION_NAME = "papers"
+BI_ENCODER_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+CROSS_ENCODER_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+INDEX_DB = BASE_DIR / "kb" / "index.db"
+
+
+def sigmoid(x: float) -> float:
+    """将 unbounded logit 映射到 [0, 1] 区间。"""
+    try:
+        return 1.0 / (1.0 + math.exp(-x))
+    except OverflowError:
+        return 1.0 if x > 0 else 0.0
+
+
+def ensure_utf8_stdout() -> None:
+    """配置 stdout/stderr 为 UTF-8 编码（Windows GBK 兼容）。"""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError):
+                pass
+
+
+def setup_logging(name: str, log_path: Path, mode: str = "a") -> logging.Logger:
+    """配置统一的日志格式，返回名为 name 的 logger。"""
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(fmt)
+    logger.addHandler(handler)
+    file_handler = logging.FileHandler(str(log_path), mode=mode, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    logger.addHandler(file_handler)
+    return logger
+
+
+def get_version(base_dir: Path) -> str:
+    """通过 git describe 获取项目版本，失败时返回 'unknown'。"""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            capture_output=True, text=True,
+            cwd=str(base_dir),
+            timeout=2,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return "unknown"
+
+
+def has_chinese(text: str) -> bool:
+    """检查文本是否包含中文字符（含 CJK 扩展 A 区）。"""
+    for ch in text:
+        if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿":
+            return True
+    return False
+
+
+def _preferred_model_device() -> str:
+    """优先使用可用的 GPU，未检测到 GPU 时回退到 CPU。"""
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+    return "cpu"
+
+
+def load_bi_encoder(device: str = "auto") -> "SentenceTransformer":
+    """加载 Bi-Encoder，优先使用本地缓存，然后 HuggingFace。"""
+    from sentence_transformers import SentenceTransformer
+
+    model_path = (
+        Path.home()
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / "models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2"
+        / "snapshots"
+        / "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
+    )
+    if device == "auto":
+        device = _preferred_model_device()
+    try:
+        if model_path.exists():
+            return SentenceTransformer(str(model_path), device=device)
+        return SentenceTransformer(BI_ENCODER_NAME, device=device)
+    except Exception as e:
+        logger.error("Bi-Encoder 加载失败: %s", e)
+        raise
+
+
+def load_cross_encoder(device: str = "auto") -> "CrossEncoder | None":
+    """加载 Cross-Encoder，失败返回 None（降级为 Bi-Encoder 模式）。"""
+    from sentence_transformers import CrossEncoder
+
+    if device == "auto":
+        device = _preferred_model_device()
+    try:
+        return CrossEncoder(CROSS_ENCODER_NAME, device=device)
+    except Exception as e:
+        logger.warning("Cross-Encoder 加载失败（仅使用 Bi-Encoder）: %s", e)
+        return None
+
+
+def get_or_create_chroma_collection() -> "chromadb.Collection":
+    """连接 ChromaDB 并获取或创建论文集合。"""
+    import chromadb
+
+    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(str(CHROMA_DIR))
+    try:
+        return client.get_collection(COLLECTION_NAME)
+    except (ValueError, chromadb.errors.NotFoundError):
+        return client.create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+
+def validate_top_k(top_k: int) -> int:
+    """验证 top_k 值在有效范围内（1-100），不合法时返回默认值 5。"""
+    try:
+        k = int(top_k)
+    except (ValueError, TypeError):
+        return 5
+    return max(1, min(k, 100))

@@ -32,7 +32,6 @@ import sys
 import traceback
 from pathlib import Path
 
-
 # ── 将 MinerU GUI 加入 sys.path（fallback） ─────────────
 # 优先：pip install -e . 已安装到 venv 中，直接 from mineru_api 即可
 # fallback：通过环境变量或自动推断路径
@@ -57,7 +56,7 @@ except ImportError:
         from mineru_api import convert_document
     except ImportError as _e:
         raise ImportError(
-            f"无法导入 mineru_api。"
+            "无法导入 mineru_api。"
             "请先执行: pip install -e . (在 MinerU GUI 目录下)"
             "或设置 MINERU_GUI_DIR 环境变量指向 MinerU GUI 目录。"
         ) from _e

@@ -2,7 +2,6 @@
 测试 scripts/utils.py 中的摘要提取和文本标准化函数。
 """
 
-import pytest
 import sys
 from pathlib import Path
 
@@ -10,14 +9,13 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from utils import (
+    _clean_abstract,
     _normalize_spaced_letters,
     _split_letters_by_known_words,
-    _clean_abstract,
     _strip_journal_header,
     extract_abstract,
     generate_summary,
 )
-
 
 # ── _normalize_spaced_letters ──────────────────────────────────
 

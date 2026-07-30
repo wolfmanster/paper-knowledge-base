@@ -26,15 +26,22 @@ import time
 from pathlib import Path
 from typing import BinaryIO
 
-# ── 路径 ─────────────────────────────────────────────────────
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from utils import (
+    CHROMA_DIR,
+    SCRIPTS_DIR,
+    ensure_utf8_stdout,
+    get_or_create_chroma_collection,
+    get_version,
+    load_bi_encoder,
+    setup_logging,
+)
 
-SCRIPTS_DIR = REPO_ROOT / "scripts"
-CHROMA_DIR = REPO_ROOT / "kb" / "chroma"
+# ── 路径 ─────────────────────────────────────────────────────
+REPO_ROOT = SCRIPTS_DIR.parent
+
 CHECKPOINT_FILE = REPO_ROOT / "kb" / "zotero_checkpoint.json"
 LOG_FILE = REPO_ROOT / "kb" / "sync_zotero.log"
 SYNC_LOCK_FILE = REPO_ROOT / "kb" / "sync_zotero.lock"
-COLLECTION_NAME = "papers"
 DEFAULT_MINERU_TIMEOUT_SECONDS = 24 * 60 * 60
 
 # Zotero 默认路径
@@ -129,23 +136,8 @@ class SyncProcessLock:
 # ── 日志 ─────────────────────────────────────────────────────
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
-# 日志沿用当前 stdout；不要重新包装进程文件描述符，否则导入模块的宿主
-# （pytest、IDE、notebook 等）可能在包装器销毁时失去自己的输出流。
-_log_stream = sys.stdout
-if hasattr(_log_stream, "reconfigure"):
-    try:
-        _log_stream.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, OSError):
-        pass
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(_log_stream),
-        logging.FileHandler(str(LOG_FILE), mode="a", encoding="utf-8"),
-    ],
-)
-logger = logging.getLogger(__name__)
+ensure_utf8_stdout()
+logger = setup_logging("sync_zotero", LOG_FILE)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -519,9 +511,10 @@ def resolve_attachment_path(
     # 超大文件检查
     max_bytes = max_size_mb * 1024 * 1024
     try:
-        if file_path.stat().st_size > max_bytes:
+        file_stat = file_path.stat()
+        if file_stat.st_size > max_bytes:
             logger.warning("  %s 文件过大 (>%dMB)，跳过: %s (%.1fMB)",
-                           type_label, max_size_mb, file_path.name, file_path.stat().st_size / (1024*1024))
+                           type_label, max_size_mb, file_path.name, file_stat.st_size / (1024*1024))
             return None
     except OSError as e:
         logger.warning("  无法读取文件大小: %s — %s", file_path.name, e)
@@ -679,43 +672,7 @@ def extract_with_mineru(
 #  导入模型与 ChromaDB
 # ═══════════════════════════════════════════════════════════════
 
-def load_bi_encoder():
-    """加载 SentenceTransformer Bi-Encoder 模型。"""
-    from sentence_transformers import SentenceTransformer
-
-    model_path = (
-        Path.home()
-        / ".cache"
-        / "huggingface"
-        / "hub"
-        / "models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2"
-        / "snapshots"
-        / "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
-    )
-
-    try:
-        if model_path.exists():
-            logger.info("从本地缓存加载 Bi-Encoder")
-            return SentenceTransformer(str(model_path))
-        logger.info("从 HuggingFace 下载 Bi-Encoder")
-        return SentenceTransformer(
-            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-        )
-    except Exception as e:
-        logger.error("Bi-Encoder 加载失败: %s", e)
-        sys.exit(1)
-
-
-def get_or_create_collection(client):
-    """获取或创建 ChromaDB 的 papers 集合。"""
-    import chromadb
-    try:
-        return client.get_collection(COLLECTION_NAME)
-    except (ValueError, chromadb.errors.NotFoundError):
-        return client.create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+# load_bi_encoder / get_or_create_collection: 从 utils 导入
 
 
 def deduplicate_paper(doi: str, title: str, collection) -> str | None:
@@ -755,6 +712,7 @@ def deduplicate_paper(doi: str, title: str, collection) -> str | None:
         title_norm = _normalize_title(title)
         offset = 0
         batch_size = 1000
+        _norm_cache = {title: title_norm}  # metadata title -> normalized title 缓存
         try:
             while True:
                 result = collection.get(
@@ -765,7 +723,10 @@ def deduplicate_paper(doi: str, title: str, collection) -> str | None:
                 ids = result.get("ids") or []
                 metadatas = result.get("metadatas") or []
                 for doc_id, metadata in zip(ids, metadatas):
-                    if metadata and _normalize_title(metadata.get("title", "")) == title_norm:
+                    mt = metadata.get("title", "")
+                    if mt not in _norm_cache:
+                        _norm_cache[mt] = _normalize_title(mt)
+                    if _norm_cache[mt] == title_norm:
                         matched_id = metadata.get("paper_id", doc_id.split("#")[0])
                         logger.debug("  标题匹配成功: '%s' -> %s", title_norm, matched_id)
                         return matched_id
@@ -940,6 +901,7 @@ def cleanup_deleted_items(cursor, collection, since_version: int = 0) -> int:
 # ═══════════════════════════════════════════════════════════════
 
 def _main_unlocked():
+    # FIXME: 约 400 行，应拆分出 _sync_items(), _sync_deletions(), _rebuild_indexes()
     import argparse
 
     # ── 参数解析 ──────────────────────────────────────────
@@ -950,25 +912,13 @@ def _main_unlocked():
     parser.add_argument("--version", action="store_true",
                         help="显示版本号并退出")
 
-    # 快速路径：--version 不触发任何延迟导入，从 git describe 获取版本
+    # 快速路径：--version 不触发任何延迟导入
     known, _ = parser.parse_known_args()
     if known.version:
-        import subprocess
-        try:
-            result = subprocess.run(
-                ["git", "describe", "--tags", "--always", "--dirty"],
-                capture_output=True, text=True,
-                cwd=REPO_ROOT.parent,
-                timeout=2,
-            )
-            ver = result.stdout.strip() if result.returncode == 0 else "unknown"
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            ver = "unknown"
-        print(f"paper-knowledge-base {ver}")
+        print(f"paper-knowledge-base {get_version(REPO_ROOT.parent)}")
         sys.exit(0)
 
     # 延迟导入（知识库环境中的依赖）
-    import chromadb
     # 知识库模块
     sys.path.insert(0, str(SCRIPTS_DIR))
     from utils import (
@@ -1064,8 +1014,7 @@ def _main_unlocked():
 
     # ── 连接 ChromaDB ──────────────────────────────────────
     logger.info("连接向量数据库...")
-    client = chromadb.PersistentClient(str(CHROMA_DIR))
-    collection = get_or_create_collection(client)
+    collection = get_or_create_chroma_collection()
 
     # Dry-run 不会生成嵌入；删除-only 同步也不需要加载大模型。
     model = None
@@ -1113,7 +1062,7 @@ def _main_unlocked():
             paper_id = compute_paper_id_from_doi(item["doi"])
         else:
             # 无 DOI 时用 Zotero key + itemID 生成确定性的 ID
-            raw = f"zotero:{item['key']}:{item_id}".encode("utf-8")
+            raw = f"zotero:{item['key']}:{item_id}".encode()
             paper_id = hashlib.sha256(raw).hexdigest()[:12]
             logger.debug("  无 DOI，使用 zotero key 计算 paper_id: %s", paper_id)
 

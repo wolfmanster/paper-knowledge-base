@@ -5,58 +5,32 @@
 流程：Bi-Encoder 初检（ChromaDB）→ Cross-Encoder 重排 → 展示
 """
 
-import math
 import sys
 from pathlib import Path
 
-import chromadb
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
-from sentence_transformers import CrossEncoder, SentenceTransformer
-
-from utils import extract_title_from_filename
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-CHROMA_DIR = BASE_DIR / "kb" / "chroma"
-COLLECTION_NAME = "papers"
-
-BI_ENCODER_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-CROSS_ENCODER_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+from utils import (
+    BASE_DIR,
+    extract_title_from_filename,
+    get_or_create_chroma_collection,
+    load_bi_encoder,
+    load_cross_encoder,
+    sigmoid,
+)
 
 INITIAL_K = 20
 FINAL_K = 10
 
 console = Console()
 
-# ── 模型加载（带错误处理）───────────────────────────────────────
-
-def load_bi_encoder() -> SentenceTransformer | None:
-    try:
-        return SentenceTransformer(BI_ENCODER_NAME)
-    except Exception as e:
-        console.print(f"[red]✗ Bi-Encoder 加载失败: {e}[/red]")
-        console.print(f"[yellow]  提示: 检查网络连接或模型缓存是否完整[/yellow]")
-        return None
-
-
-def load_cross_encoder() -> CrossEncoder | None:
-    try:
-        return CrossEncoder(CROSS_ENCODER_NAME)
-    except Exception as e:
-        console.print(f"[red]✗ Cross-Encoder 加载失败: {e}[/red]")
-        console.print(f"[yellow]  提示: 检查网络连接，模型将从 HuggingFace 下载 [/yellow]")
-        console.print(f"[yellow]  地址：https://huggingface.co/{CROSS_ENCODER_NAME}[/yellow]")
-        console.print(f"[yellow]  跳过重排，将仅使用 Bi-Encoder 检索[/yellow]")
-        return None
-
 
 def load_collection():
     try:
-        client = chromadb.PersistentClient(str(CHROMA_DIR))
-        return client.get_collection(COLLECTION_NAME)
+        return get_or_create_chroma_collection()
     except Exception:
         console.print("[red]错误: 数据库为空或损坏，请先运行 python ingest.py 导入论文[/red]")
         sys.exit(1)
@@ -65,7 +39,11 @@ def load_collection():
 def load_resources():
     """加载两个模型和向量数据库，任何一个模型失败不阻塞整体启动。"""
     with console.status("加载 Bi-Encoder..."):
-        bi_encoder = load_bi_encoder()
+        try:
+            bi_encoder = load_bi_encoder()
+        except Exception as e:
+            console.print(f"[red]✗ Bi-Encoder 加载失败: {e}[/red]")
+            sys.exit(1)
     if bi_encoder is None:
         sys.exit(1)
 
@@ -76,8 +54,8 @@ def load_resources():
         collection = load_collection()
 
     status_parts = [
-        f"[green]✓[/green] Bi-Encoder",
-        f"[green]✓[/green] Cross-Encoder" if cross_encoder else "[yellow]✗ Cross-Encoder (禁用重排)[/yellow]",
+        "[green]✓[/green] Bi-Encoder",
+        "[green]✓[/green] Cross-Encoder" if cross_encoder else "[yellow]✗ Cross-Encoder (禁用重排)[/yellow]",
         f"[green]✓[/green] 数据库 {collection.count()} chunks",
     ]
     console.print(" | ".join(status_parts))
@@ -86,17 +64,9 @@ def load_resources():
 
 # ── 两阶段搜索 ────────────────────────────────────────────────
 
-def _sigmoid(x: float) -> float:
-    """将 unbounded logit 映射到 [0, 1] 区间。"""
-    try:
-        return 1.0 / (1.0 + math.exp(-x))
-    except OverflowError:
-        return 1.0 if x > 0 else 0.0
-
-
 def search(
-    bi_encoder: SentenceTransformer,
-    cross_encoder: CrossEncoder | None,
+    bi_encoder,
+    cross_encoder,
     collection,
     query: str,
     initial_k: int = INITIAL_K,
@@ -123,7 +93,7 @@ def search(
         pairs = [[query, doc] for doc in documents]
         scores = cross_encoder.predict(pairs)
         # sigmoid 归一化，确保得分在 [0,1] 区间
-        scores = [_sigmoid(float(s)) for s in scores]
+        scores = [sigmoid(float(s)) for s in scores]
         ranked = sorted(
             zip(scores, ids, documents, metadatas),
             key=lambda x: x[0],

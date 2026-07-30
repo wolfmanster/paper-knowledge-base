@@ -18,25 +18,10 @@ import json
 import re
 import sqlite3
 import sys
-from pathlib import Path
 
-# Windows GBK/CP936 兼容：调整现有流，不替换宿主进程的 stdout。
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, OSError):
-        pass
+from utils import INDEX_DB, ensure_utf8_stdout, has_chinese
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-INDEX_DB = BASE_DIR / "kb" / "index.db"
-
-
-def _has_chinese(text: str) -> bool:
-    """检查文本是否包含中文字符（含 CJK 扩展 A 区）。"""
-    for ch in text:
-        if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿":
-            return True
-    return False
+ensure_utf8_stdout()
 
 
 def _determine_match_type(
@@ -200,7 +185,7 @@ def search(query: str, top_k: int = 10) -> list:
 
         # ── 第三阶段：短英文查询的单词边界过滤 ──
         # "PEC" 不应匹配 "especially"。对 <=4 字符的纯英文查询执行 \b 过滤。
-        if len(query) <= 4 and not _has_chinese(query) and query.isascii():
+        if len(query) <= 4 and not has_chinese(query) and query.isascii():
             word_pattern = re.compile(rf"\b{re.escape(query)}\b", re.IGNORECASE)
             exact_matches: list[dict] = []
             substring_only: list[dict] = []

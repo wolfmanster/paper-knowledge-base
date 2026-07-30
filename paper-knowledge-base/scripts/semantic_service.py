@@ -13,15 +13,22 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from index_generation import read_index_generation
+from utils import (
+    BASE_DIR,
+    ensure_utf8_stdout,
+    get_or_create_chroma_collection,
+    load_bi_encoder,
+    load_cross_encoder,
+)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 HOST = os.environ.get("PKB_SEMANTIC_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PKB_SEMANTIC_PORT", "8765"))
 STARTUP_TIMEOUT = float(os.environ.get("PKB_SEMANTIC_START_TIMEOUT", "90"))
@@ -74,10 +81,10 @@ class SemanticRuntime:
     def load(self) -> None:
         try:
             query_module = self._module_loader()
-            bi_encoder = query_module._load_bi_encoder()
-            cross_encoder = query_module._load_cross_encoder()
+            bi_encoder = load_bi_encoder()
+            cross_encoder = load_cross_encoder()
             generation_before = self._generation_reader()
-            collection = query_module._get_collection()
+            collection = get_or_create_chroma_collection()
             generation_after = self._generation_reader()
             if generation_before != generation_after:
                 raise SemanticIndexChangedError("模型预热期间索引发生变化，请重试")
@@ -246,12 +253,7 @@ def create_server(
 
 
 def _configure_utf8_streams() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            try:
-                stream.reconfigure(encoding="utf-8", errors="replace")
-            except (AttributeError, OSError):
-                pass
+    ensure_utf8_stdout()
 
 
 def _load_runtime_and_stop_on_error(

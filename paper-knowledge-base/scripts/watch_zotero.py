@@ -13,7 +13,6 @@ import sys
 import time
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SYNC_SCRIPT = Path(__file__).resolve().parent / "sync_zotero.py"
 DEFAULT_ZOTERO_DIR = Path.home() / "Zotero"

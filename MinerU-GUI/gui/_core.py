@@ -34,9 +34,6 @@ _PROGRESS_REGEX = re.compile(r"page\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 LogCallback = Callable[[str], None]
 
 
-
-
-
 def parse_log_for_progress(msg: str) -> tuple[int, int] | None:
     """Try to extract ``(current_page, total_pages)`` from a log line."""
     m = _PROGRESS_REGEX.search(msg)

@@ -5,97 +5,36 @@
   PDF 提取 → 分块 → 嵌入 → 存储到 ChromaDB
 """
 
-import logging
-import sys
 import time
-from pathlib import Path
-
-import chromadb
-from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 
 from index_generation import mark_index_changed
+from tqdm import tqdm
 from utils import (
+    CHROMA_DIR,
     CHUNK_MAX_WORDS,
+    SCRIPTS_DIR,
     chunk_text,
     compute_paper_id,
     extract_text_from_pdf,
     extract_title_from_filename,
+    get_or_create_chroma_collection,
     is_supported_file,
+    load_bi_encoder,
+    setup_logging,
 )
 
 # ── 路径（使用绝对路径）────────────────────────────────────────
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-PAPERS_DIR = BASE_DIR / "Papers"
-CHROMA_DIR = BASE_DIR / "kb" / "chroma"
-LOG_FILE = BASE_DIR / "kb" / "ingest.log"
+PAPERS_DIR = SCRIPTS_DIR.parent / "Papers"
+LOG_FILE = CHROMA_DIR.parent / "ingest.log"
 
 # ── 日志 ─────────────────────────────────────────────────────
 
-CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(str(LOG_FILE), mode="w", encoding="utf-8"),
-    ],
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging("ingest", LOG_FILE, mode="w")
 
-# ── 嵌入模型（使用本地缓存路径，避免 HF 请求）────────────────
+# ── 嵌入模型 ─────────────────────────────────────────────────
 
-LOCAL_MODEL_PATH = (
-    Path.home()
-    / ".cache"
-    / "huggingface"
-    / "hub"
-    / "models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2"
-    / "snapshots"
-    / "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
-)
 EMBED_BATCH_SIZE = 32
-
-
-def load_model() -> SentenceTransformer:
-    if LOCAL_MODEL_PATH.exists():
-        logger.info("从本地缓存加载模型")
-        try:
-            model = SentenceTransformer(str(LOCAL_MODEL_PATH))
-        except Exception as e:
-            logger.error("本地模型加载失败（缓存可能损坏）: %s", e)
-            logger.info("尝试从 HuggingFace 重新下载...")
-            model = SentenceTransformer(
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-            )
-    else:
-        logger.info("本地缓存不存在，从 HuggingFace 下载模型...")
-        try:
-            model = SentenceTransformer(
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-            )
-        except Exception as e:
-            logger.error("模型下载失败: %s", e)
-            logger.error("请检查网络连接或手动下载模型到: %s", LOCAL_MODEL_PATH)
-            sys.exit(1)
-    logger.info("模型加载完成，嵌入维度: %d", model.get_embedding_dimension())
-    return model
-
-
-# ── 向量数据库 ───────────────────────────────────────────────
-
-COLLECTION_NAME = "papers"
-
-
-def get_or_create_collection(client: chromadb.PersistentClient):
-    try:
-        return client.get_collection(COLLECTION_NAME)
-    except (ValueError, chromadb.errors.NotFoundError):
-        return client.create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
 
 
 def load_existing_paper_ids(collection) -> set:
@@ -121,11 +60,10 @@ def load_existing_paper_ids(collection) -> set:
 def main():
     PAPERS_DIR.mkdir(exist_ok=True)
 
-    model = load_model()
+    model = load_bi_encoder()
 
     logger.info("连接向量数据库")
-    client = chromadb.PersistentClient(str(CHROMA_DIR))
-    collection = get_or_create_collection(client)
+    collection = get_or_create_chroma_collection()
 
     existing_ids = load_existing_paper_ids(collection)
     logger.info("数据库中已有 %d 篇论文\n", len(existing_ids))

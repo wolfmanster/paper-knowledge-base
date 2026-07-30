@@ -7,7 +7,6 @@
 用法: python scripts/build_index.py
 """
 
-import logging
 import os
 import sqlite3
 import sys
@@ -15,40 +14,27 @@ import tempfile
 import time
 from pathlib import Path
 
-# Windows GBK/CP936 兼容：调整现有流，不替换宿主进程的 stdout。
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, OSError):
-        pass
-
-import chromadb
 from tqdm import tqdm
-from utils import extract_abstract, generate_summary
+from utils import (
+    COLLECTION_NAME,
+    INDEX_DB,
+    SCRIPTS_DIR,
+    ensure_utf8_stdout,
+    extract_abstract,
+    generate_summary,
+    get_or_create_chroma_collection,
+    setup_logging,
+)
 
-# ── 路径 ─────────────────────────────────────────────────────
+ensure_utf8_stdout()
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-SCRIPTS_DIR = BASE_DIR / "scripts"
+# 确保能找到 scripts/ 下的模块
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-CHROMA_DIR = BASE_DIR / "kb" / "chroma"
-INDEX_DB = BASE_DIR / "kb" / "index.db"
-LOG_FILE = BASE_DIR / "kb" / "build_index.log"
-COLLECTION_NAME = "papers"
-
 INDEX_DB.parent.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(str(LOG_FILE), mode="w", encoding="utf-8"),
-    ],
-)
-logger = logging.getLogger(__name__)
+LOG_FILE = INDEX_DB.parent / "build_index.log"
+logger = setup_logging("build_index", LOG_FILE, mode="w")
 
 
 # ── 数据库初始化 ─────────────────────────────────────────────
@@ -132,14 +118,16 @@ def main():
 
     # 连接 ChromaDB
     logger.info("连接 ChromaDB...")
-    client = chromadb.PersistentClient(str(CHROMA_DIR))
     try:
-        collection = client.get_collection(COLLECTION_NAME)
-    except (ValueError, chromadb.errors.NotFoundError):
-        logger.error("Chroma 集合 '%s' 不存在，请先运行 ingest.py", COLLECTION_NAME)
+        collection = get_or_create_chroma_collection()
+    except Exception:
+        logger.error("ChromaDB 连接失败，请确认数据库存在", COLLECTION_NAME)
         sys.exit(1)
 
     total_chunks = collection.count()
+    if total_chunks == 0:
+        logger.error("ChromaDB 中没有数据，请先运行 ingest.py 或 sync_zotero.py 导入论文")
+        sys.exit(1)
     logger.info("ChromaDB 中共有 %d 个 chunks", total_chunks)
 
     # 分页加载所有 chunks（每次 2000 个）
