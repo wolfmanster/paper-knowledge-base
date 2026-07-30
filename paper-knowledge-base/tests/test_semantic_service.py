@@ -30,16 +30,28 @@ def make_fake_query_module(calls: list[str]):
         return [{"title": kwargs["query"], "score": 0.9}]
 
     return types.SimpleNamespace(
-        _load_bi_encoder=lambda: calls.append("bi") or encoder,
-        _load_cross_encoder=lambda: calls.append("cross") or reranker,
-        _get_collection=lambda: calls.append("collection") or collection,
         search_with_components=search_with_components,
     )
 
 
-def test_runtime_reuses_models_and_collection_across_searches():
+def test_runtime_reuses_models_and_collection_across_searches(monkeypatch):
     calls: list[str] = []
-    fake_query = make_fake_query_module(calls)
+    encoder = types.SimpleNamespace(device="cuda:0")
+    reranker = object()
+    collection = object()
+
+    monkeypatch.setattr(semantic_service, "load_bi_encoder", lambda **kwargs: calls.append("bi") or encoder)
+    monkeypatch.setattr(semantic_service, "load_cross_encoder", lambda **kwargs: calls.append("cross") or reranker)
+    monkeypatch.setattr(semantic_service, "get_or_create_chroma_collection", lambda: calls.append("collection") or collection)
+
+    def search_with_components(**kwargs):
+        calls.append(f"search:{kwargs['query']}:{kwargs['top_k']}")
+        assert kwargs["bi_encoder"] is encoder
+        assert kwargs["cross_encoder"] is reranker
+        assert kwargs["collection"] is collection
+        return [{"title": kwargs["query"], "score": 0.9}]
+
+    fake_query = types.SimpleNamespace(search_with_components=search_with_components)
     runtime = semantic_service.SemanticRuntime(lambda: fake_query)
 
     runtime.load()
@@ -53,9 +65,23 @@ def test_runtime_reuses_models_and_collection_across_searches():
     assert calls == ["bi", "cross", "collection", "search:alpha:3", "search:beta:5"]
 
 
-def test_runtime_rejects_results_after_index_generation_changes():
+def test_runtime_rejects_results_after_index_generation_changes(monkeypatch):
     calls: list[str] = []
     generation = ["old"]
+
+    def fake_bi(**kwargs):
+        return types.SimpleNamespace(device="cpu")
+
+    def fake_cross(**kwargs):
+        return object()
+
+    def fake_collection():
+        return object()
+
+    monkeypatch.setattr(semantic_service, "load_bi_encoder", fake_bi)
+    monkeypatch.setattr(semantic_service, "load_cross_encoder", fake_cross)
+    monkeypatch.setattr(semantic_service, "get_or_create_chroma_collection", fake_collection)
+
     runtime = semantic_service.SemanticRuntime(
         lambda: make_fake_query_module(calls),
         generation_reader=lambda: generation[0],
@@ -81,11 +107,9 @@ def test_index_generation_marker_is_atomic_and_changes(tmp_path):
     assert list(tmp_path.iterdir()) == [marker]
 
 
-def test_failed_runtime_load_stops_server():
-    class FailedQuery:
-        @staticmethod
-        def _load_bi_encoder():
-            raise RuntimeError("model unavailable")
+def test_failed_runtime_load_stops_server(monkeypatch):
+    monkeypatch.setattr(semantic_service, "load_bi_encoder",
+                        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("model unavailable")))
 
     class Server:
         stopped = False
@@ -93,7 +117,7 @@ def test_failed_runtime_load_stops_server():
         def shutdown(self):
             self.stopped = True
 
-    runtime = semantic_service.SemanticRuntime(lambda: FailedQuery())
+    runtime = semantic_service.SemanticRuntime(lambda: object())
     server = Server()
 
     semantic_service._load_runtime_and_stop_on_error(runtime, server)
@@ -168,9 +192,25 @@ def test_stop_service_waits_until_port_is_released(monkeypatch):
     assert calls == ["health", "shutdown", "wait"]
 
 
-def test_remote_search_uses_ready_loopback_service():
+def test_remote_search_uses_ready_loopback_service(monkeypatch):
     calls: list[str] = []
-    runtime = semantic_service.SemanticRuntime(lambda: make_fake_query_module(calls))
+    encoder = types.SimpleNamespace(device="cpu")
+    reranker = object()
+    collection = object()
+
+    monkeypatch.setattr(semantic_service, "load_bi_encoder", lambda **kwargs: calls.append("bi") or encoder)
+    monkeypatch.setattr(semantic_service, "load_cross_encoder", lambda **kwargs: calls.append("cross") or reranker)
+    monkeypatch.setattr(semantic_service, "get_or_create_chroma_collection", lambda: calls.append("collection") or collection)
+
+    def search_with_components(**kwargs):
+        calls.append(f"search:{kwargs['query']}:{kwargs['top_k']}")
+        assert kwargs["bi_encoder"] is encoder
+        assert kwargs["cross_encoder"] is reranker
+        assert kwargs["collection"] is collection
+        return [{"title": kwargs["query"], "score": 0.9}]
+
+    fake_query = types.SimpleNamespace(search_with_components=search_with_components)
+    runtime = semantic_service.SemanticRuntime(lambda: fake_query)
     runtime.load()
     server = semantic_service.create_server("127.0.0.1", 0, runtime)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

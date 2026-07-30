@@ -6,8 +6,8 @@ from pathlib import Path
 from tkinter import StringVar, filedialog
 
 import customtkinter as ctk
-
 from app import SUPPORTED_EXTENSIONS
+
 from gui.theme import PALETTE, ghost_button, styled_entry, text_font
 
 

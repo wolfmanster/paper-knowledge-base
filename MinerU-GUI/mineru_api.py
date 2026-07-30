@@ -35,7 +35,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # ── Version ─────────────────────────────────────────────
-from app import __version__ as __version__
 from gui._core import run_core
 
 

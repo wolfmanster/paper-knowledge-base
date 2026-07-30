@@ -15,8 +15,6 @@ import sys
 from pathlib import Path
 
 from utils import (
-    COLLECTION_NAME,
-    CHROMA_DIR,
     SCRIPTS_DIR,
     ensure_utf8_stdout,
     get_or_create_chroma_collection,

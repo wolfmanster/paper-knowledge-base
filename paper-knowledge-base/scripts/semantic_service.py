@@ -13,19 +13,20 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from index_generation import read_index_generation
 from utils import (
     BASE_DIR,
+    ensure_utf8_stdout,
+    get_or_create_chroma_collection,
     load_bi_encoder,
     load_cross_encoder,
-    get_or_create_chroma_collection,
-    ensure_utf8_stdout,
 )
 
 HOST = os.environ.get("PKB_SEMANTIC_HOST", "127.0.0.1")

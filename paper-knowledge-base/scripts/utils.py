@@ -10,7 +10,7 @@ import math
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import fitz  # PyMuPDF
 
@@ -29,7 +29,7 @@ MAX_PAGES = 20
 MAX_TEXT_CHARS = 100_000
 
 
-def extract_text_from_pdf(pdf_path: Path) -> Optional[str]:
+def extract_text_from_pdf(pdf_path: Path) -> str | None:
     """用 PyMuPDF 提取 PDF 全文，返回纯文本，失败返回 None。
 
     - 跳过 >25MB 的超大文件（手册/书籍）
@@ -122,7 +122,7 @@ def chunk_text(
     text: str,
     title: str = "",
     max_words: int = CHUNK_MAX_WORDS,
-) -> List[dict]:
+) -> list[dict]:
     """将文本切分为适合嵌入的块。
 
     策略：段落级分割 → 词数分块（简单可靠，避免正则陷阱）。
@@ -185,7 +185,7 @@ _SECTION_NAMES = {
 _NUM_PREFIX = re.compile(r"^(\d+(?:\.\d+)*|[IVXLCDM]+|[A-Z])[\.\s]+(.+)$")
 
 
-def _detect_section_header(line: str) -> Optional[str]:
+def _detect_section_header(line: str) -> str | None:
     """检测一行是否是章节标题。是则返回规范化章节名，否则返回 None。"""
     stripped = line.lower().strip().rstrip(".: ")
     if stripped in _SECTION_NAMES:

@@ -2,19 +2,19 @@
 测试 scripts/quick_search.py 中的文本搜索功能。
 """
 
-import json
-import pytest
 import sqlite3
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from quick_search import (
-    search,
     _determine_match_type,
     _highlight_preview,
+    search,
 )
 
 # ── 测试数据库 ──────────────────────────────────────────────────

@@ -1,16 +1,15 @@
 """
 Zotero 同步模块 — 单元测试
 """
-import hashlib
 import json
-import re
+
+# ── 复用知识库模块 ─────────────────────────────────────────
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-# ── 复用知识库模块 ─────────────────────────────────────────
-import sys
 BASE_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = BASE_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -21,7 +20,6 @@ from utils import (
     extract_text_from_markdown,
     extract_year_from_date,
 )
-
 
 # ═══════════════════════════════════════════════════════════════
 #  compute_paper_id_from_doi
@@ -202,7 +200,6 @@ class TestCheckpointIO:
     def test_checkpoint_atomic_write(self, checkpoint_dir):
         """验证原子写入不会产生部分写入的文件。"""
         cp_file = checkpoint_dir / "checkpoint.json"
-        import os
 
         # 写入完整内容
         content = json.dumps({"last_item_id": 100, "last_version": 50,

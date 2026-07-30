@@ -8,16 +8,12 @@
 import sys
 from pathlib import Path
 
-import chromadb
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
-
 from utils import (
-    CHROMA_DIR,
-    COLLECTION_NAME,
     BASE_DIR,
     extract_title_from_filename,
     get_or_create_chroma_collection,
@@ -54,8 +50,8 @@ def load_resources():
         collection = load_collection()
 
     status_parts = [
-        f"[green]✓[/green] Bi-Encoder",
-        f"[green]✓[/green] Cross-Encoder" if cross_encoder else "[yellow]✗ Cross-Encoder (禁用重排)[/yellow]",
+        "[green]✓[/green] Bi-Encoder",
+        "[green]✓[/green] Cross-Encoder" if cross_encoder else "[yellow]✗ Cross-Encoder (禁用重排)[/yellow]",
         f"[green]✓[/green] 数据库 {collection.count()} chunks",
     ]
     console.print(" | ".join(status_parts))

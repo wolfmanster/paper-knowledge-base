@@ -19,6 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import build_index
 import generate_collection_info
 import index_generation
+import utils as utils_module
 import query as query_module
 import sync_zotero
 import watch_zotero
@@ -31,7 +32,6 @@ def test_query_module_defers_sentence_transformers_import(monkeypatch):
         def find_spec(self, fullname, path=None, target=None):
             if fullname == "sentence_transformers":
                 raise AssertionError("query.py imported sentence_transformers eagerly")
-            return None
 
     blocker = BlockSentenceTransformers()
     monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
@@ -59,7 +59,7 @@ def test_query_prefers_cuda_when_available(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
-    assert query_module._preferred_model_device() == "cuda"
+    assert utils_module._preferred_model_device() == "cuda"
 
 
 def test_query_falls_back_to_cpu_without_gpu(monkeypatch):
@@ -71,7 +71,7 @@ def test_query_falls_back_to_cpu_without_gpu(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
-    assert query_module._preferred_model_device() == "cpu"
+    assert utils_module._preferred_model_device() == "cpu"
 
 
 def test_query_model_loaders_receive_preferred_device(monkeypatch):
@@ -85,7 +85,7 @@ def test_query_model_loaders_receive_preferred_device(monkeypatch):
         def __init__(self, model_name, *, device):
             calls.append(("cross", str(model_name), device))
 
-    monkeypatch.setattr(query_module, "_preferred_model_device", lambda: "cuda")
+    monkeypatch.setattr(utils_module, "_preferred_model_device", lambda: "cuda")
     monkeypatch.setitem(
         sys.modules,
         "sentence_transformers",
@@ -95,8 +95,8 @@ def test_query_model_loaders_receive_preferred_device(monkeypatch):
         ),
     )
 
-    query_module._load_bi_encoder()
-    query_module._load_cross_encoder()
+    utils_module.load_bi_encoder()
+    utils_module.load_cross_encoder()
 
     assert calls[0][0::2] == ("bi", "cuda")
     assert calls[1] == (
@@ -174,7 +174,7 @@ def test_full_rescan_skips_duplicate_before_mineru_extraction(tmp_path, monkeypa
     monkeypatch.setattr(sync_zotero, "get_zotero_db_connection", lambda _: Connection())
     monkeypatch.setattr(sync_zotero, "check_zotero_version", lambda _: 1)
     monkeypatch.setattr(sync_zotero, "get_paper_items", lambda *args, **kwargs: [item])
-    monkeypatch.setattr(sync_zotero, "get_or_create_collection", lambda _: object())
+    monkeypatch.setattr(sync_zotero, "get_or_create_chroma_collection", lambda: object())
     monkeypatch.setattr(sync_zotero, "load_bi_encoder", lambda: object())
     monkeypatch.setattr(sync_zotero, "deduplicate_paper", lambda *args: "paper-1")
     monkeypatch.setattr(sync_zotero, "_get_existing_zotero_item_id", lambda *args: 101)
@@ -501,7 +501,7 @@ def test_delete_only_sync_still_runs_cleanup(tmp_path, monkeypatch):
         "load_checkpoint",
         lambda: {"last_item_id": 10, "last_version": 40, "pending_item_ids": []},
     )
-    monkeypatch.setattr(sync_zotero, "get_or_create_collection", lambda _: fake_collection)
+    monkeypatch.setattr(sync_zotero, "get_or_create_chroma_collection", lambda: fake_collection)
     monkeypatch.setattr(
         sync_zotero,
         "cleanup_deleted_items",
@@ -573,8 +573,8 @@ def test_query_fallback_reports_cosine_similarity(monkeypatch):
                 "distances": [[0.2, 0.7]],
             }
 
-    monkeypatch.setattr(query_module, "_load_bi_encoder", lambda: Encoder())
-    monkeypatch.setattr(query_module, "_load_cross_encoder", lambda: None)
+    monkeypatch.setattr(query_module, "load_bi_encoder", lambda: Encoder())
+    monkeypatch.setattr(query_module, "load_cross_encoder", lambda: None)
     monkeypatch.setattr(query_module, "_get_collection", lambda: Collection())
 
     results = query_module.search("paper", top_k=2)
@@ -607,7 +607,7 @@ def test_failed_index_build_preserves_existing_database(tmp_path, monkeypatch):
             return Collection()
 
     monkeypatch.setattr(build_index, "INDEX_DB", index_path)
-    monkeypatch.setattr(build_index.chromadb, "PersistentClient", Client)
+    monkeypatch.setattr("chromadb.PersistentClient", Client)
     monkeypatch.setattr(
         build_index,
         "extract_abstract",

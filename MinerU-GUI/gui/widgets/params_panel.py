@@ -5,8 +5,8 @@ from __future__ import annotations
 from tkinter import BooleanVar, StringVar
 
 import customtkinter as ctk
-
 from app import BACKENDS, LANGUAGES
+
 from gui.theme import PALETTE, styled_entry, styled_option_menu, text_font
 
 METHODS = ["auto", "txt", "ocr"]

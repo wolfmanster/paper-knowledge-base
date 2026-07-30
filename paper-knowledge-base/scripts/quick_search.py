@@ -18,7 +18,6 @@ import json
 import re
 import sqlite3
 import sys
-from pathlib import Path
 
 from utils import INDEX_DB, ensure_utf8_stdout, has_chinese
 
