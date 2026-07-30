@@ -259,15 +259,21 @@ if __name__ == "__main__":
     #   python query.py -g "filename.pdf"                       同上（简写）
     #   python query.py --version                               显示版本号
 
-    # --version 快速退出（不延迟导入）
+    # --version 快速退出（不延迟导入）：从 git describe 获取版本
     if "--version" in sys.argv[1:]:
-        _version_file = BASE_DIR.parent / "_version.py"
-        if _version_file.exists():
-            _ver: dict[str, str] = {}
-            exec(_version_file.read_text(encoding="utf-8"), _ver)
-            print(f"paper-knowledge-base {_ver.get('__version__', 'unknown')}")
-        else:
-            print("paper-knowledge-base unknown (no _version.py)")
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["git", "describe", "--tags", "--always", "--dirty"],
+                capture_output=True, text=True,
+                cwd=BASE_DIR.parent,
+                timeout=2,
+            )
+            ver = result.stdout.strip() if result.returncode == 0 else "unknown"
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            ver = "unknown"
+        print(f"paper-knowledge-base {ver}")
         sys.exit(0)
 
     search_mode = "semantic"

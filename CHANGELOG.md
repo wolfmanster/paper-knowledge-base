@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- Version management across the monorepo: single `_version.py` source of truth,
-  `__version__` in `mineru_api.py` and `app.py`, `--version` CLI flags,
-  version shown in GUI window title, CHANGELOG.
+- **Version management:** migrated from `_version.py` files to git-tag-based versioning.
+  MinerU-GUI now uses `setuptools-scm` (via `pyproject.toml`) to derive version from
+  the nearest `v*` git tag; `--version` flags in knowledge base scripts use
+  `git describe --tags --always`. Removed root `_version.py` and
+  `MinerU-GUI/_version.py`.
 
 ## [1.0.0] — 2026-07-28
 
