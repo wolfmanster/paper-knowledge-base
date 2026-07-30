@@ -161,13 +161,16 @@ def search_with_components(
 
 def search(query: str, top_k: int = 5) -> list:
     """在当前进程加载模型并执行两阶段搜索。"""
-    return search_with_components(
-        query=query,
-        top_k=top_k,
-        bi_encoder=load_bi_encoder(),
-        cross_encoder=load_cross_encoder(),
-        collection=_get_collection(),
-    )
+    try:
+        return search_with_components(
+            query=query,
+            top_k=top_k,
+            bi_encoder=load_bi_encoder(),
+            cross_encoder=load_cross_encoder(),
+            collection=_get_collection(),
+        )
+    except Exception as e:
+        _fail(f"模型加载失败: {e}")
 
 
 def search_via_service(query: str, top_k: int = 5) -> list:

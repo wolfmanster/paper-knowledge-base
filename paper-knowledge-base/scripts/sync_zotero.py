@@ -712,7 +712,7 @@ def deduplicate_paper(doi: str, title: str, collection) -> str | None:
         title_norm = _normalize_title(title)
         offset = 0
         batch_size = 1000
-        _norm_cache = {title: title_norm}  # paper_id -> normalized title 缓存
+        _norm_cache = {title: title_norm}  # metadata title -> normalized title 缓存
         try:
             while True:
                 result = collection.get(

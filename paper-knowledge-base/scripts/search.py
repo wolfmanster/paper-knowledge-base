@@ -39,7 +39,11 @@ def load_collection():
 def load_resources():
     """加载两个模型和向量数据库，任何一个模型失败不阻塞整体启动。"""
     with console.status("加载 Bi-Encoder..."):
-        bi_encoder = load_bi_encoder()
+        try:
+            bi_encoder = load_bi_encoder()
+        except Exception as e:
+            console.print(f"[red]✗ Bi-Encoder 加载失败: {e}[/red]")
+            sys.exit(1)
     if bi_encoder is None:
         sys.exit(1)
 

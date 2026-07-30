@@ -121,10 +121,13 @@ def main():
     try:
         collection = get_or_create_chroma_collection()
     except Exception:
-        logger.error("Chroma 集合 '%s' 不存在，请先运行 ingest.py", COLLECTION_NAME)
+        logger.error("ChromaDB 连接失败，请确认数据库存在", COLLECTION_NAME)
         sys.exit(1)
 
     total_chunks = collection.count()
+    if total_chunks == 0:
+        logger.error("ChromaDB 中没有数据，请先运行 ingest.py 或 sync_zotero.py 导入论文")
+        sys.exit(1)
     logger.info("ChromaDB 中共有 %d 个 chunks", total_chunks)
 
     # 分页加载所有 chunks（每次 2000 个）
